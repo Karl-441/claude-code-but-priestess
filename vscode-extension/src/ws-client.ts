@@ -6,6 +6,7 @@ import { EventEmitter } from "events";
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
+export const PRTS_WS_ORIGIN = "vscode-webview://prts";
 
 interface PendingRequest {
   resolve: (value: any) => void;
@@ -83,8 +84,10 @@ const NOTIFY_TYPES = new Set([
   "vscode:diagnostics",
   "vscode:activity",
   "vscode:workspace",
-  // Chat control — server handles but does not send reqId-matched reply
+  // Fire-and-forget chat controls
   "chat:cancel",
+  "conversation:new",
+  "conversation:restore",
 ]);
 
 export class WsClient extends EventEmitter {
@@ -145,7 +148,9 @@ export class WsClient extends EventEmitter {
 
     try {
       const WebSocket = require("ws");
-      this.ws = new WebSocket(url);
+      // Node's ws client sends no Origin by default. The PRTS bridge rejects
+      // origin-less sockets before token auth, so identify this local client.
+      this.ws = new WebSocket(url, { origin: PRTS_WS_ORIGIN });
 
       this.ws.on("open", () => {
         this.ws.send(JSON.stringify({ type: "auth", token: authToken }));
@@ -173,7 +178,9 @@ export class WsClient extends EventEmitter {
       this.ws.on("error", (err: Error) => {
         this.updateStatusBar("error");
       });
-    } catch {
+    } catch (error) {
+      console.error("PRTS: failed to create WebSocket client", error);
+      this.updateStatusBar("error");
       this.scheduleReconnect();
     }
   }

@@ -12,6 +12,7 @@ const persona = require("./persona");
 const skills = require("./skills");
 const priestessProvider = require("./priestess-provider");
 const { spawnCli, spawnCliSync } = require("./cli-spawn");
+const { buildCodexExecArgs, resolveResumeSessionId } = require("./chat-runtime");
 
 const PROVIDERS = Object.freeze({
   CLAUDE: "claude",
@@ -113,6 +114,7 @@ const OBSERVATION_MAX_PER_TURN = 3;
 let directiveTailBuffer = "";
 let skillExecutedThisTurn = new Set();
 let observedThisTurn = new Set();
+let rememberedThisTurn = new Set();
 let lastEmittedMood = null;
 let sawSilentDirective = false;
 
@@ -881,6 +883,7 @@ function resetDirectiveParsing() {
   directiveTailBuffer = "";
   skillExecutedThisTurn = new Set();
   observedThisTurn = new Set();
+  rememberedThisTurn = new Set();
   lastEmittedMood = null;
   sawSilentDirective = false;
 }
@@ -987,7 +990,10 @@ function handleDirective(full, mood, skillName, skillArg, observe, remember) {
   } else if (remember !== undefined) {
     // [[remember:…]] writes to MEMORY.md — works in any mode, no file tools needed.
     const text = (remember || "").trim();
-    if (text) persona.appendMemoryEntry(text);
+    if (text && !rememberedThisTurn.has(text)) {
+      rememberedThisTurn.add(text);
+      persona.appendMemoryEntry(text);
+    }
   } else {
     sawSilentDirective = true;
   }
@@ -995,7 +1001,7 @@ function handleDirective(full, mood, skillName, skillArg, observe, remember) {
 }
 
 function couldStartDirective(tail) {
-  const norm = tail.replace(/\s+/g, "").toLowerCase();
+  const norm = tail.replace(/\s+/g, "").replaceAll("：", ":").toLowerCase();
   return DIRECTIVE_PREFIXES.some((prefix) =>
     norm.length <= prefix.length ? prefix.startsWith(norm) : norm.startsWith(prefix)
   );
@@ -2125,7 +2131,11 @@ function buildClaudeInvocation(trimmed, vibeCodingMode, screenshotPath, sharedTr
   const isAgent = mode === "agent";
   const isAdvisor = mode === "advisor";
   const isMaintenance = mode === "maintenance";
-  const effectiveSessions = customSessionIds || sessionIds;
+  const resumeSessionId = resolveResumeSessionId(
+    PROVIDERS.CLAUDE,
+    sessionPlan,
+    customSessionIds
+  );
   const memoryRecallRequested = shouldIncludeLongMemoryForText(trimmed);
   const includeLongMemory = !longMemoryDormant || memoryRecallRequested;
   const systemPrompt = persona.buildPersonaPrompt({
@@ -2180,8 +2190,8 @@ function buildClaudeInvocation(trimmed, vibeCodingMode, screenshotPath, sharedTr
   // Let Read reach attachments dropped from outside the project dir.
   args.push(...attachmentDirArgs());
 
-  if (effectiveSessions[PROVIDERS.CLAUDE]) {
-    args.push("--resume", effectiveSessions[PROVIDERS.CLAUDE]);
+  if (resumeSessionId) {
+    args.push("--resume", resumeSessionId);
   }
 
   return {
@@ -2189,7 +2199,7 @@ function buildClaudeInvocation(trimmed, vibeCodingMode, screenshotPath, sharedTr
     args,
     stdin: `${trimmed}\n`,
     cleanupDirs: promptFile ? [promptFile.dir] : [],
-    resumed: Boolean(sessionPlan?.resumeSessionId)
+    resumed: Boolean(resumeSessionId)
   };
 }
 
@@ -2220,84 +2230,44 @@ function buildCodexPrompt(trimmed, vibeCodingMode, screenshotPath, sharedTranscr
   );
 }
 
-function buildCodexInvocation(trimmed, cwd, vibeCodingMode, screenshotPath, sharedTranscript, customSessionIds) {
+function buildCodexInvocation(trimmed, cwd, vibeCodingMode, screenshotPath, sharedTranscript, sessionPlan, customSessionIds) {
   const mode = vibeCodingMode || "companion";
-  const isAgent = mode === "agent";
-  const isAdvisor = mode === "advisor";
-  const isMaintenance = mode === "maintenance";
-  const effectiveSessions = customSessionIds || sessionIds;
+  const resumeSessionId = resolveResumeSessionId(
+    PROVIDERS.CODEX,
+    sessionPlan,
+    customSessionIds
+  );
   const prompt = buildCodexPrompt(trimmed, mode, screenshotPath, sharedTranscript);
   const codexModel = validatedCodexModel();
-  let args;
-
-  if (effectiveSessions[PROVIDERS.CODEX]) {
-    args = [
-      "exec",
-      "resume",
-      "--json",
-      "--skip-git-repo-check"
-    ];
-    if (codexModel) {
-      args.push("--model", codexModel);
-    }
-    if (screenshotPath) {
-      args.push("-i", screenshotPath);
-    }
-    args.push(...codexAttachmentArgs());
-    if (isAgent) {
-      args.push("--dangerously-bypass-approvals-and-sandbox");
-    } else if (isAdvisor || isMaintenance) {
-      // Resumed sessions carry their original sandbox; re-assert the current
-      // mode's sandbox so a prior agent session can't leak tools.
-      args.push("-s", isMaintenance ? "workspace-write" : "read-only",
-                 "--add-dir", persona.memoryDir());
-    } else {
-      args.push("-s", "read-only", "--add-dir", persona.memoryDir());
-    }
-    args.push(effectiveSessions[PROVIDERS.CODEX], "-");
-  } else {
-    args = [
-      "exec",
-      "--json",
-      "--color",
-      "never",
-      "--skip-git-repo-check",
-      "-C",
-      cwd
-    ];
-    if (codexModel) {
-      args.push("--model", codexModel);
-    }
-    if (screenshotPath) {
-      args.push("-i", screenshotPath);
-    }
-    args.push(...codexAttachmentArgs());
-    if (isAgent) {
-      args.push("--dangerously-bypass-approvals-and-sandbox");
-    } else if (isAdvisor) {
-      // Read-only workspace + memory dir so she can still read her own notes.
-      args.push("-s", "read-only", "--add-dir", persona.memoryDir());
-    } else if (isMaintenance) {
-      // Memory maintenance: needs file write access to memory dir.
-      args.push("-s", "workspace-write", "--add-dir", persona.memoryDir());
-    } else {
-      // Companion: read-only sandbox — memory dir accessible, no workspace access.
-      args.push("-s", "read-only", "--add-dir", persona.memoryDir());
-    }
-    args.push("-");
-  }
+  const invocation = buildCodexExecArgs({
+    cwd,
+    mode,
+    resumeSessionId,
+    model: codexModel,
+    screenshotPath,
+    attachmentArgs: codexAttachmentArgs(),
+    memoryDir: persona.memoryDir()
+  });
 
   return {
     command: resolveExecutable("codex"),
-    args,
+    args: invocation.args,
     stdin: prompt,
-    resumed: Boolean(effectiveSessions[PROVIDERS.CODEX])
+    resumed: invocation.resumed
   };
 }
 
 function buildProviderInvocation(provider, trimmed, cwd, vibeCodingMode, screenshotPath, sharedTranscript, sessionPlan, customSessionIds) {
   if (provider === PROVIDERS.CODEX) {
-    return buildCodexInvocation(trimmed, cwd, vibeCodingMode, screenshotPath, sharedTranscript, customSessionIds);
+    return buildCodexInvocation(
+      trimmed,
+      cwd,
+      vibeCodingMode,
+      screenshotPath,
+      sharedTranscript,
+      sessionPlan,
+      customSessionIds
+    );
   }
   return buildClaudeInvocation(trimmed, vibeCodingMode, screenshotPath, sharedTranscript, sessionPlan, customSessionIds);
 }
