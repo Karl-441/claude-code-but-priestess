@@ -41,7 +41,7 @@ jobs:
       - name: Syntax check (TypeScript)
         run: |
           cd vscode-extension
-          npx tsc --noEmit
+          npx --no-install tsc --noEmit
 
       - name: Run tests
         run: node test/run.js
