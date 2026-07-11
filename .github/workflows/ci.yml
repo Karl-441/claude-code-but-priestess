@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        node-version: [22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install extension dependencies
+        run: cd vscode-extension && npm install
+
+      - name: Syntax check (JavaScript)
+        run: |
+          for f in src/main/chat.js src/main/vscode-chat.js src/main/ws-server.js \
+                   src/main/main.js src/main/persona.js src/main/settings.js \
+                   src/main/proactive.js src/main/platform.js src/renderer/renderer.js; do
+            node --check "$f" || { echo "FAIL: $f"; exit 1; }
+          done
+          echo "All JS syntax checks passed"
+
+      - name: Syntax check (TypeScript)
+        run: |
+          cd vscode-extension
+          npx tsc --noEmit
+
+      - name: Run tests
+        run: node test/run.js
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 22
+
+      - name: Check required asset files
+        run: node scripts/check-assets.js

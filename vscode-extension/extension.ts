@@ -127,9 +127,30 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ---- Connection lifecycle ----
 
-  // On first connect: send vscode:active, offer to restore previous conversation
+  let autoSwitchedToAdvisor = false;
+
+  // On first connect: send vscode:active, sync advisor blacklist from VS Code config,
+  // and auto-switch to advisor mode if a workspace is open.
   (wsClient as any).on("connected", () => {
     wsClient!.send("vscode:active");
+    // Sync the advisor file blacklist from VS Code settings to Electron.
+    const blacklist = vscode.workspace.getConfiguration("prts").get<string>("advisorFileBlacklist");
+    if (typeof blacklist === "string") {
+      wsClient!.send("settings:set", { patch: { advisorFileBlacklist: blacklist } });
+    }
+    // Auto-switch to advisor once per session when a workspace folder is present.
+    if (!autoSwitchedToAdvisor) {
+      const folders = vscode.workspace.workspaceFolders;
+      if (folders && folders.length > 0) {
+        wsClient!.send("settings:get").then((res: any) => {
+          const mode = res?.state?.vibeCodingMode || "companion";
+          if (mode === "companion") {
+            wsClient!.send("settings:set", { patch: { vibeCodingMode: "advisor" } });
+            autoSwitchedToAdvisor = true;
+          }
+        }).catch(() => {});
+      }
+    }
   });
 
   // After auth, the server sends conversation:has-previous.

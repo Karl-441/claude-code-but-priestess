@@ -34,6 +34,10 @@ let midTurn = false;
 let outboundQueue = [];
 let vscodeSessionIds = {};
 let staleRetryInFlight = false;
+let claudeModelInvalid = false;       // model_not_found or <synthetic> detected
+let modelFallbackInFlight = false;    // guards the model-fallback retry
+let claudeResultErrored = false;      // empty error result detected
+let launchedWithSession = false;       // this turn used --resume
 
 // Per-turn streaming state
 let pendingAssistantText = "";
@@ -130,6 +134,9 @@ function beginAssistant() {
   rememberedThisTurn.clear();
   lastEmittedMood = null;
   currentToolName = null;
+  claudeModelInvalid = false;
+  claudeResultErrored = false;
+  launchedWithSession = false;
   history.push({
     id: currentAssistantId,
     role: "assistant",
@@ -364,6 +371,17 @@ function handleClaudeLine(line) {
 
   if (event.type === "result") {
     vscodeSessionIds.claude = event.session_id;
+    // Detect model_not_found — flag for fallback retry in close handler.
+    if (event.is_error && event.error === "model_not_found") {
+      claudeModelInvalid = true;
+    }
+    if (event.message?.model === "<synthetic>") {
+      claudeModelInvalid = true;
+    }
+    // Detect empty error result — flag for stale-session retry.
+    if (event.is_error && !pendingAssistantText.trim()) {
+      claudeResultErrored = true;
+    }
     emit({ kind: "tool", active: false });
     finalizeAssistant();
     return;
@@ -533,6 +551,7 @@ function dispatchSend(trimmed, context) {
     return;
   }
 
+  launchedWithSession = Boolean(vscodeSessionIds[provider]);
   emit({
     kind: "status",
     status: "running",
@@ -572,13 +591,23 @@ function dispatchSend(trimmed, context) {
     if (currentAssistantId) finalizeAssistant();
 
     // Self-heal: drop stale session on "not found" errors and retry once.
-    const sessionLost = /no conversation found|session.*not found|invalid.*session/i.test(stderr);
-    if (sessionLost && !staleRetryInFlight) {
+    const sessionLost = launchedWithSession && !staleRetryInFlight &&
+      (claudeResultErrored || /no conversation found|session.*not found|invalid.*session/i.test(stderr));
+    if (sessionLost) {
       staleRetryInFlight = true;
       vscodeSessionIds[provider] = null;
       saveConversation();
-      // Retry with a fresh session. staleRetryInFlight stays true until the
-      // retry succeeds — prevents loops if the fresh session also fails.
+      dispatchSend(trimmed, context);
+      return;
+    }
+
+    // Model fallback: the selected --model isn't available → clear it and retry once.
+    const badModel = String(settings.get("claudeModel") || "").trim();
+    if (provider === "claude" && !modelFallbackInFlight && claudeModelInvalid && badModel) {
+      settings.set({ claudeModel: "" });
+      modelFallbackInFlight = true;
+      claudeModelInvalid = false;
+      history.push({ id: nextId(), role: "system", text: `Claude 模型 \`${badModel}\` 当前账号不可用，已切回默认并重试。`, ts: Date.now() });
       dispatchSend(trimmed, context);
       return;
     }
@@ -591,7 +620,8 @@ function dispatchSend(trimmed, context) {
         provider,
       });
     } else {
-      staleRetryInFlight = false; // retry succeeded — clear the guard
+      staleRetryInFlight = false;
+      modelFallbackInFlight = false;
       emit({ kind: "status", status: "idle", provider });
     }
 
@@ -641,7 +671,8 @@ function send(text, context) {
     outboundQueue.push({ text: trimmed, context: context || null });
     return { ok: true, queued: true, queueLength: outboundQueue.length };
   }
-  staleRetryInFlight = false; // new user message — clear self-heal guard
+  staleRetryInFlight = false;
+  modelFallbackInFlight = false;
   dispatchSend(trimmed, context || null);
   return { ok: true };
 }

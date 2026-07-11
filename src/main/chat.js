@@ -2927,10 +2927,25 @@ function buildVibeProactivePrompt(opts) {
   if (opts?.diagnosticContext) {
     return buildDiagnosticProactivePrompt(opts.diagnosticContext);
   }
+  if (opts?.diagnosticImprovement) {
+    return buildImprovementPrompt(opts.diagnosticImprovement);
+  }
   if (opts?.activityContext) {
     return buildActivityProactivePrompt();
   }
   return buildProactivePrompt();
+}
+
+function buildImprovementPrompt(diag) {
+  const lines = [
+    buildProactivePrompt(),
+    "",
+    "博士刚刚修好了代码——编辑器的报错数量降到了 0。",
+    "这是他采纳了你的建议、或者自己努力的结果。",
+    "用你自然的风格，给一句真诚的、属于普瑞赛斯的肯定。不用长，一两句就够了。",
+    "如果只是偶然清零（比如关了文件），可以说 [[silent]]。",
+  ];
+  return lines.join("\n");
 }
 
 function buildDiagnosticProactivePrompt(diag) {

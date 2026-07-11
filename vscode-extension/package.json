@@ -138,6 +138,11 @@
           "type": "number",
           "default": 0,
           "description": "WebSocket port of the PRTS Electron app. Auto-detected from ws-port.json at startup; set manually only if auto-detection fails."
+        },
+        "prts.advisorFileBlacklist": {
+          "type": "string",
+          "default": ".env\n.env.*\n*secret*\n*credential*\n*.pem\n*.key\nid_rsa*\n*password*\n*token*",
+          "description": "Advisor mode file blacklist — gitignore-style, one pattern per line. Priestess will not read files matching any of these patterns."
         }
       }
     }

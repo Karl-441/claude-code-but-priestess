@@ -31,6 +31,7 @@ let lastProactiveAttemptAt = 0;
 let lastMaintenanceAttemptAt = 0;
 let lastDiagnosticAttemptAt = 0;
 let lastActivityAttemptAt = 0;
+let lastDiagErrorCount = -1; // tracks previous diagnostic error count for improvement detection
 // Daily cap state is in-memory on purpose: a tray app stays up for days, and
 // a restart at worst resets the day's budget once.
 let daily = { day: "", count: 0 };
@@ -93,9 +94,20 @@ function activityCooldownMs() {
   return clampNumber(settings.get("activityCheckCooldownMin"), 1, 60, 3) * 60 * 1000;
 }
 
+// Proactivity level is tied to vibeCodingMode:
+// companion → completely silent, no proactive checks at all
+// advisor   → diagnostic checks only (lint errors change)
+// agent     → diagnostics + activity + waifu checks (if waifu enabled)
+function proactiveLevel() {
+  const mode = settings.get("vibeCodingMode") || "companion";
+  if (mode === "agent") return "full";
+  if (mode === "advisor") return "diagnostics";
+  return "silent";
+}
+
 function shouldRunDiagnosticCheck(now) {
   if (!getWsServer().isVscodeActive()) return false;
-  if (settings.get("vibeCodingDiagnostics") !== true) return false;
+  if (proactiveLevel() === "silent") return false; // companion mode
   if (now - lastDiagnosticAttemptAt < diagnosticCooldownMs()) return false;
   if (chat.isBusy()) return false;
   if (inQuietHours()) return false;
@@ -109,7 +121,14 @@ function shouldRunDiagnosticCheck(now) {
   if (daily.count >= dailyCap()) return false;
   if (!hasCliProvider()) return false;
   const diag = getWsServer().getLatestDiagnostics();
-  if (!diag || diag.errors === 0) return false;
+  if (!diag) return false;
+  // Detect improvement: errors dropped from previous snapshot → positive feedback.
+  if (lastDiagErrorCount > 0 && diag.errors < lastDiagErrorCount && diag.errors === 0) {
+    lastDiagErrorCount = diag.errors;
+    return "improvement";
+  }
+  lastDiagErrorCount = diag.errors;
+  if (diag.errors === 0) return false;
   const lastTs = chat.getLastConversationTs();
   if (lastTs && now - lastTs < cooldownMs()) return false;
   return true;
@@ -117,7 +136,7 @@ function shouldRunDiagnosticCheck(now) {
 
 function shouldRunActivityCheck(now) {
   if (!getWsServer().isVscodeActive()) return false;
-  if (settings.get("vibeCodingActivityNarration") !== true) return false;
+  if (proactiveLevel() !== "full") return false; // only agent mode
   if (now - lastActivityAttemptAt < activityCooldownMs()) return false;
   if (chat.isBusy()) return false;
   if (inQuietHours()) return false;
@@ -183,10 +202,16 @@ function tick() {
     // Priority: diagnostics > activity > generic proactive > maintenance
     // Each tick fires at most one self-turn to avoid flooding the model.
 
-    if (shouldRunDiagnosticCheck(now)) {
+    const diagResult = shouldRunDiagnosticCheck(now);
+    if (diagResult) {
       lastDiagnosticAttemptAt = now;
       const diag = getWsServer().getLatestDiagnostics();
-      if (chat.sendProactive({ diagnosticContext: diag })?.ok) {
+      if (diagResult === "improvement") {
+        // Positive feedback: errors went from N to 0 — she noticed.
+        if (chat.sendProactive({ diagnosticImprovement: diag })?.ok) {
+          daily.count += 1;
+        }
+      } else if (chat.sendProactive({ diagnosticContext: diag })?.ok) {
         daily.count += 1;
       }
       return;
