@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: CI
 
 on:
@@ -21,14 +22,18 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      - name: Install extension dependencies
-        run: cd vscode-extension && npm install
+      - name: Install dependencies
+        run: |
+          cd vscode-extension && npm install
+          npm install --omit=dev
 
       - name: Syntax check (JavaScript)
         run: |
           for f in src/main/chat.js src/main/vscode-chat.js src/main/ws-server.js \
                    src/main/main.js src/main/persona.js src/main/settings.js \
-                   src/main/proactive.js src/main/platform.js src/renderer/renderer.js; do
+                   src/main/proactive.js src/main/platform.js src/main/ws-policy.js \
+                   src/main/chat-runtime.js src/main/directive-stream.js \
+                   src/renderer/renderer.js; do
             node --check "$f" || { echo "FAIL: $f"; exit 1; }
           done
           echo "All JS syntax checks passed"
