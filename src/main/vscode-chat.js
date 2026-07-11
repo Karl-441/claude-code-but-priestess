@@ -6,9 +6,9 @@
 // Long-term memory (MEMORY.md, archive, summary) is still shared — both
 // conversation surfaces feed the same persona memory files.
 //
-// Reuses chat.js for provider CLI invocation building and directive
-// stripping, persona.js for prompt construction, cli-spawn.js for
-// subprocess spawning, and skills.js for skill execution.
+// Reuses chat.js for provider CLI invocation building, persona.js for prompt
+// construction, cli-spawn.js for subprocess spawning, and skills.js for skill
+// execution.
 
 const path = require("node:path");
 const fs = require("node:fs");
@@ -20,6 +20,8 @@ const persona = require("./persona");
 const settings = require("./settings");
 const skills = require("./skills");
 const { spawnCli } = require("./cli-spawn");
+const { normalizeCwd } = require("./chat-runtime");
+const { cleanDirectiveText, consumeDirectiveChunk } = require("./directive-stream");
 
 // ---------------------------------------------------------------------------
 // State
@@ -34,17 +36,13 @@ let midTurn = false;
 let outboundQueue = [];
 let vscodeSessionIds = {};
 let staleRetryInFlight = false;
-let claudeModelInvalid = false;       // model_not_found or <synthetic> detected
-let modelFallbackInFlight = false;    // guards the model-fallback retry
-let claudeResultErrored = false;      // empty error result detected
-let launchedWithSession = false;       // this turn used --resume
 
 // Per-turn streaming state
 let pendingAssistantText = "";
 let currentAssistantId = null;
 let currentToolName = null;
-let pendingDirectiveBuffer = "";
-let directiveTailBuffer = ""; // partial directive fragment spanning chunk boundaries
+let directiveStreamState = { tail: "" };
+let directiveTurnToken = 0;
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -128,8 +126,9 @@ function pushUser(text, context) {
 function beginAssistant() {
   currentAssistantId = nextId();
   pendingAssistantText = "";
-  pendingDirectiveBuffer = "";
-  directiveTailBuffer = "";
+  providerErrorText = "";
+  directiveStreamState = { tail: "" };
+  directiveTurnToken += 1;
   skillExecutedThisTurn.clear();
   rememberedThisTurn.clear();
   lastEmittedMood = null;
@@ -147,52 +146,18 @@ function beginAssistant() {
 
 function appendAssistant(raw) {
   pendingAssistantText += raw;
-  // Accumulate into the directive buffer for complete-tag matching.
-  pendingDirectiveBuffer += raw;
-  // Cross-chunk directive guard: prepend any buffered tail from the previous
-  // chunk so tags split across chunk boundaries don't leak their second half.
-  const displayInput = directiveTailBuffer + raw;
-  // Strip directives from streaming text for clean display.
-  const clean = stripPartialDirectives(displayInput);
-  // Hold back a trailing partial tag for the next chunk.
-  const partialRe = /\[\[\s*(?:mood|skill|observe|silent|remember)[^\]]{0,40}$/;
-  const partialMatch = clean.match(partialRe);
-  if (partialMatch) {
-    directiveTailBuffer = partialMatch[0];
-  } else {
-    directiveTailBuffer = "";
-  }
-  // Check for complete directive tags in the accumulated buffer.
-  checkDirectives();
-  if (clean) {
-    const entry = history[history.length - 1];
+  const visible = consumeDirectiveChunk(
+    directiveStreamState,
+    raw,
+    handleVscodeDirective
+  );
+  if (visible) {
+    const entry = history.find((item) => item.id === currentAssistantId);
     if (entry && entry.id === currentAssistantId) {
-      entry.text += clean;
+      entry.text += visible;
     }
-    emit({ kind: "chunk", messageId: currentAssistantId, text: clean });
+    emit({ kind: "chunk", messageId: currentAssistantId, text: visible });
   }
-}
-
-function stripPartialDirectives(text) {
-  // Remove complete [[mood:X]] tags (strict and lenient single-bracket).
-  // Also handles full-width colon (：) the way chat.js does.
-  let out = text.replace(/\[\[\s*mood\s*[:：]\s*([a-z]+)\s*\]\]/gi, "");
-  out = out.replace(/\[\[\s*mood\s*[:：]\s*([a-z]+)\s*\](?=[^\]])/gi, "");
-  // Remove [[skill:NAME ARG]] — skill name allows a-z_ only, arg is rest.
-  out = out.replace(/\[\[\s*skill\s*[:：]\s*([a-z_]+)(?:\s+([^\]]*?))?\s*\]\]/gi, "");
-  // Remove [[silent]]
-  out = out.replace(/\[\[\s*silent\s*\]\]/gi, "");
-  // Remove [[observe:…]]
-  out = out.replace(/\[\[\s*observe\s*[:：]\s*[^\]]*\s*\]\]/gi, "");
-  // Remove [[remember:…]]
-  out = out.replace(/\[\[\s*remember\s*[:：]\s*[^\]]*\s*\]\]/gi, "");
-  // Strip trailing partial directive from display.
-  const partialRe = /\[\[\s*(?:mood|skill|observe|silent|remember)[^\]]{0,40}$/;
-  const partialMatch = out.match(partialRe);
-  if (partialMatch) {
-    out = out.slice(0, out.length - partialMatch[0].length);
-  }
-  return out;
 }
 
 const skillExecutedThisTurn = new Set();
@@ -208,84 +173,52 @@ function normalizeMood(raw) {
   return m;
 }
 
-function checkDirectives() {
-  let match;
-
-  // Extract and handle complete [[mood:X]] tags (strict + lenient single-bracket).
-  // Dedup per-turn: only emit when the mood actually changes.
-  // Uses [a-zA-Z]+ to match capitalized moods (chat.js uses [^\]]*? + normalizeMood).
-  const moodRe = /\[\[\s*mood\s*[:：]\s*([a-zA-Z]+)\s*\]\]/gi;
-  while ((match = moodRe.exec(pendingDirectiveBuffer)) !== null) {
-    const thisMood = normalizeMood(match[1]);
-    if (thisMood !== lastEmittedMood) {
-      lastEmittedMood = thisMood;
-      emit({ kind: "mood", mood: thisMood });
+function handleVscodeDirective(directive) {
+  if (directive.type === "mood") {
+    const mood = normalizeMood(directive.value);
+    if (mood && mood !== lastEmittedMood) {
+      lastEmittedMood = mood;
+      emit({ kind: "mood", mood });
     }
-  }
-  // Lenient single-bracket mood: [[mood:sad] (no second closing bracket).
-  const moodLenientRe = /\[\[\s*mood\s*[:：]\s*([a-zA-Z]+)\s*\](?=[^\]])/gi;
-  while ((match = moodLenientRe.exec(pendingDirectiveBuffer)) !== null) {
-    const thisMood = normalizeMood(match[1]);
-    if (thisMood !== lastEmittedMood) {
-      lastEmittedMood = thisMood;
-      emit({ kind: "mood", mood: thisMood });
-    }
+    return;
   }
 
-  // [[remember:…]] — write to MEMORY.md, works in any mode (no file tools needed).
-  // Dedup per-turn so each unique text is written only once.
-  const rememberRe = /\[\[\s*remember\s*[:：]\s*([^\]]+)\s*\]\]/gi;
-  while ((match = rememberRe.exec(pendingDirectiveBuffer)) !== null) {
-    const text = (match[1] || "").trim();
+  if (directive.type === "remember") {
+    const text = String(directive.value || "").trim();
     if (text && !rememberedThisTurn.has(text)) {
       rememberedThisTurn.add(text);
       persona.appendMemoryEntry(text);
     }
+    return;
   }
 
-  // [[skill:NAME ARG]] — guarded on skillsEnabled + dedup per turn.
-  if (settings.get("skillsEnabled") === false) return;
-  const skillRe = /\[\[\s*skill\s*[:：]\s*([a-z_]+)(?:\s+([^\]]*?))?\s*\]\]/gi;
-  while ((match = skillRe.exec(pendingDirectiveBuffer)) !== null) {
-    const tag = match[0];
-    if (skillExecutedThisTurn.has(tag)) continue;
-    skillExecutedThisTurn.add(tag);
-    const turnToken = currentAssistantId;
-    skills.runSkill(match[1], match[2] || "").then((result) => {
-      // Guard: don't inject stale skill results after clear() or a new turn.
-      if (!result.receipt || turnToken !== currentAssistantId) return;
-      history.push({
-        id: nextId(),
-        role: "tool",
-        summary: result.receipt,
-        ts: Date.now(),
-      });
-      emit({ kind: "history", history: history.slice() });
-      saveConversation();
+  if (directive.type !== "skill" || settings.get("skillsEnabled") === false) return;
+  const key = String(directive.raw || "").trim();
+  if (skillExecutedThisTurn.has(key)) return;
+  skillExecutedThisTurn.add(key);
+  const turnToken = directiveTurnToken;
+  skills.runSkill(directive.name, directive.arg || "").then((result) => {
+    // A completed reply may still receive its skill receipt; a new/cancelled
+    // turn invalidates the token so stale actions cannot mutate newer history.
+    if (!result.receipt || turnToken !== directiveTurnToken) return;
+    history.push({
+      id: nextId(),
+      role: "tool",
+      summary: result.receipt,
+      ts: Date.now(),
     });
-  }
-}
-
-// Side-effect-free directive stripper for finalize — directives are already
-// executed by checkDirectives() during streaming; this just cleans the text.
-function cleanDirectives(text) {
-  if (!text) return "";
-  return String(text)
-    .replace(/\[\[\s*mood\s*[:：]\s*[a-zA-Z]+\s*\]\]/gi, "")
-    .replace(/\[\[\s*mood\s*[:：]\s*[a-z]+\s*\](?=[^\]])/gi, "")
-    .replace(/\[\[\s*skill\s*[:：]\s*[a-z_]+(?:\s+[^\]]*?)?\s*\]\]/gi, "")
-    .replace(/\[\[\s*silent\s*\]\]/gi, "")
-    .replace(/\[\[\s*observe\s*[:：]\s*[^\]]*\s*\]\]/gi, "")
-    .replace(/\[\[\s*remember\s*[:：]\s*[^\]]*\s*\]\]/gi, "")
-    .replace(/\[?\[\s*(?:mood|skill|observe|remember|silent)\b[^\]]*$/i, "")
-    .trim();
+    emit({ kind: "history", history: history.slice() });
+    saveConversation();
+  }).catch((error) => {
+    console.warn("vscode-chat: skill failed", error);
+  });
 }
 
 function finalizeAssistant() {
   // Strip directive tags from the final text (side-effect-free — directives
-  // were already executed by checkDirectives during streaming).
-  const clean = cleanDirectives(pendingAssistantText);
-  const entry = history[history.length - 1];
+  // were already executed while the stream was consumed).
+  const clean = cleanDirectiveText(pendingAssistantText);
+  const entry = history.find((item) => item.id === currentAssistantId);
   if (entry && entry.id === currentAssistantId) {
     // If the reply was only directives, show "(silent)" instead of leaking raw tags.
     entry.text = clean || "(silent)";
@@ -294,20 +227,52 @@ function finalizeAssistant() {
   saveConversation();
 
   // Archive to shared memory
-  try {
-    persona.ensureConversationArchiveFile();
-    const line = JSON.stringify({
-      role: "assistant",
-      text: clean,
-      ts: Date.now(),
-      provider: currentProvider || "unknown",
-    });
-    fs.appendFileSync(persona.conversationArchivePath(), line + "\n", "utf8");
-  } catch (_) { /* best effort */ }
+  if (clean) {
+    try {
+      persona.ensureConversationArchiveFile();
+      const line = JSON.stringify({
+        role: "assistant",
+        text: clean,
+        ts: Date.now(),
+        provider: currentProvider || "unknown",
+      });
+      fs.appendFileSync(persona.conversationArchivePath(), line + "\n", "utf8");
+    } catch (_) { /* best effort */ }
+  }
 
   pendingAssistantText = "";
-  pendingDirectiveBuffer = "";
+  directiveStreamState = { tail: "" };
   currentAssistantId = null;
+}
+
+function discardAssistant() {
+  const index = history.findIndex((item) => item.id === currentAssistantId);
+  if (index !== -1) history.splice(index, 1);
+  pendingAssistantText = "";
+  directiveStreamState = { tail: "" };
+  currentAssistantId = null;
+  emit({ kind: "history", history: history.slice() });
+  saveConversation();
+}
+
+function latestMatchingUser(text) {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const entry = history[i];
+    if (entry?.role === "user" && entry.text === text) return entry;
+  }
+  return null;
+}
+
+function drainOutboundQueue() {
+  while (outboundQueue.length > 0) {
+    const next = outboundQueue.shift();
+    if (!next?.text) continue;
+    // This is a distinct user turn, not the internal retry of the previous
+    // one, so it gets its own single stale-session recovery attempt.
+    staleRetryInFlight = false;
+    dispatchSend(next.text, next.context || null);
+    return;
+  }
 }
 
 function pushTool(name, summary) {
@@ -383,6 +348,12 @@ function handleClaudeLine(line) {
       claudeResultErrored = true;
     }
     emit({ kind: "tool", active: false });
+    if (event.is_error) {
+      providerErrorText = typeof event.result === "string"
+        ? event.result
+        : String(event.error || event.subtype || "Claude returned an error");
+      if (!pendingAssistantText) return;
+    }
     finalizeAssistant();
     return;
   }
@@ -413,6 +384,11 @@ function handleCodexLine(line) {
       vscodeSessionIds.codex = id;
       saveConversation();
     }
+  }
+
+  if (type.includes("error")) {
+    providerErrorText = String(event.message || event.error || JSON.stringify(event)).slice(0, 1000);
+    return;
   }
 
   const delta =
@@ -487,7 +463,7 @@ function buildContextAugmentedMessage(userText, context) {
 // Turn management
 // ---------------------------------------------------------------------------
 
-function dispatchSend(trimmed, context) {
+function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
   if (currentProcess) return; // re-entry guard — don't touch midTurn, it belongs to the running turn
   midTurn = true;
   const provider = chat.getProviderAvailability().activeProvider || "claude";
@@ -512,15 +488,21 @@ function dispatchSend(trimmed, context) {
   // Inject editor context into the user message so the CLI sees it
   const messageWithContext = buildContextAugmentedMessage(trimmed, context);
 
-  pushUser(trimmed, context);  // store original text + context in history
+  const currentUserEntry = userAlreadyShown
+    ? latestMatchingUser(trimmed)
+    : pushUser(trimmed, context);
 
   // Build a shared transcript from our own history for context continuity.
   const SHARED_MAX = 9000; // matches chat.js SHARED_TRANSCRIPT_MAX_CHARS
   const sharedLines = [];
-  for (let i = history.length - 1; i >= 0 && sharedLines.join("\n").length < SHARED_MAX; i--) {
+  let sharedChars = 0;
+  for (let i = history.length - 1; i >= 0 && sharedChars < SHARED_MAX; i--) {
     const m = history[i];
+    if (m.id === currentUserEntry?.id) continue;
     if (m.role === "user" || m.role === "assistant") {
-      sharedLines.unshift(`${m.role === "user" ? "博士" : "普瑞赛斯"}: ${(m.text || "").slice(0, 200)}`);
+      const line = `${m.role === "user" ? "博士" : "普瑞赛斯"}: ${(m.text || "").slice(0, 200)}`;
+      sharedLines.unshift(line);
+      sharedChars += line.length + 1;
     }
   }
   const sharedTranscript = sharedLines.join("\n");
@@ -528,8 +510,7 @@ function dispatchSend(trimmed, context) {
   const rawMode = settings.get("vibeCodingMode") || "companion";
   // VS Code extension never gets full agent — cap at advisor.
   const vibeCodingMode = rawMode === "agent" ? "advisor" : rawMode;
-  // Push downgrade notice BEFORE beginAssistant so it doesn't disrupt the
-  // history[history.length-1] assumption used by appendAssistant/finalizeAssistant.
+  // Keep the downgrade visible in history before the assistant reply starts.
   if (rawMode === "agent") {
     history.push({ id: nextId(), role: "system", text: "VS Code 扩展不支持代理模式，已切换至顾问模式（只读工具）。", ts: Date.now() });
   }
@@ -538,16 +519,15 @@ function dispatchSend(trimmed, context) {
 
   const wsServer = require("./ws-server");
   const vscodeWs = wsServer.getVscodeWorkspace();
-  const cwd = vscodeWs || settings.get("chatCwd") || "";
+  const cwd = normalizeCwd(vscodeWs || settings.get("chatCwd"));
   const invocation = chat.buildProviderInvocation(provider, messageWithContext, cwd, vibeCodingMode, null, sharedTranscript, null, vscodeSessionIds);
 
   if (!invocation) {
     const errMsg = "No CLI provider available";
     history.push({ id: nextId(), role: "system", text: errMsg, ts: Date.now() });
     emit({ kind: "status", status: "idle", error: errMsg });
-    emit({ kind: "history", history: history.slice() });
     midTurn = false;
-    currentAssistantId = null; // unwind empty assistant entry from beginAssistant()
+    discardAssistant();
     return;
   }
 
@@ -559,18 +539,34 @@ function dispatchSend(trimmed, context) {
     sessionId: vscodeSessionIds[provider] || null,
   });
 
-  currentProcess = spawnCli(invocation.command, invocation.args, {
-    cwd: cwd || undefined,
-    env: { ...process.env },
-  });
+  let proc;
+  try {
+    proc = spawnCli(invocation.command, invocation.args, {
+      cwd,
+      env: { ...process.env },
+    });
+  } catch (error) {
+    midTurn = false;
+    discardAssistant();
+    emit({
+      kind: "status",
+      status: "idle",
+      error: error.message,
+      provider,
+    });
+    drainOutboundQueue();
+    return;
+  }
+  currentProcess = proc;
 
   if (invocation.stdin) {
-    currentProcess.stdin.write(invocation.stdin);
-    currentProcess.stdin.end();
+    proc.stdin.write(invocation.stdin);
+    proc.stdin.end();
   }
 
-  const rl = readline.createInterface({ input: currentProcess.stdout });
+  const rl = readline.createInterface({ input: proc.stdout });
   rl.on("line", (line) => {
+    if (currentProcess !== proc) return;
     if (provider === "claude" || provider === "priestess") {
       handleClaudeLine(line);
     } else if (provider === "codex") {
@@ -579,44 +575,38 @@ function dispatchSend(trimmed, context) {
   });
 
   let stderr = "";
-  currentProcess.stderr.on("data", (chunk) => {
+  proc.stderr.on("data", (chunk) => {
     stderr += chunk.toString();
   });
 
-  currentProcess.on("close", (code) => {
+  proc.on("close", (code) => {
+    if (currentProcess !== proc) return;
     currentProcess = null;
     midTurn = false;
 
-    // Finalize the assistant entry — mirrors chat.js close handler behaviour.
-    if (currentAssistantId) finalizeAssistant();
-
     // Self-heal: drop stale session on "not found" errors and retry once.
-    const sessionLost = launchedWithSession && !staleRetryInFlight &&
-      (claudeResultErrored || /no conversation found|session.*not found|invalid.*session/i.test(stderr));
-    if (sessionLost) {
+    const sessionLost = /no conversation found|session.*not found|invalid.*session/i.test(stderr);
+    if (sessionLost && !staleRetryInFlight) {
       staleRetryInFlight = true;
       vscodeSessionIds[provider] = null;
+      if (currentAssistantId) discardAssistant();
       saveConversation();
+      // Retry with a fresh session. staleRetryInFlight stays true until the
+      // retry succeeds — prevents loops if the fresh session also fails.
       dispatchSend(trimmed, context);
       return;
     }
 
-    // Model fallback: the selected --model isn't available → clear it and retry once.
-    const badModel = String(settings.get("claudeModel") || "").trim();
-    if (provider === "claude" && !modelFallbackInFlight && claudeModelInvalid && badModel) {
-      settings.set({ claudeModel: "" });
-      modelFallbackInFlight = true;
-      claudeModelInvalid = false;
-      history.push({ id: nextId(), role: "system", text: `Claude 模型 \`${badModel}\` 当前账号不可用，已切回默认并重试。`, ts: Date.now() });
-      dispatchSend(trimmed, context);
-      return;
+    if (currentAssistantId) {
+      if (pendingAssistantText || (code === 0 && !providerErrorText)) finalizeAssistant();
+      else discardAssistant();
     }
 
-    if (code !== 0 && code !== null) {
+    if ((code !== 0 && code !== null) || providerErrorText) {
       emit({
         kind: "status",
         status: "idle",
-        error: "CLI exited with code " + code,
+        error: providerErrorText || "CLI exited with code " + code,
         provider,
       });
     } else {
@@ -625,39 +615,27 @@ function dispatchSend(trimmed, context) {
       emit({ kind: "status", status: "idle", provider });
     }
 
-    // Process queued messages — peek first, shift only on success.
-    if (outboundQueue.length > 0) {
-      const next = outboundQueue[0];
-      if (next && next.text) {
-        dispatchSend(next.text, next.context || null);
-        outboundQueue.shift();
-      } else {
-        outboundQueue.shift(); // discard malformed entry
-      }
-    }
+    drainOutboundQueue();
   });
 
-  currentProcess.on("error", (err) => {
+  proc.on("error", (err) => {
+    if (currentProcess !== proc) return;
     currentProcess = null;
     midTurn = false;
     staleRetryInFlight = false;
-    if (currentAssistantId) finalizeAssistant();
+    if (currentAssistantId) {
+      if (pendingAssistantText) finalizeAssistant();
+      else discardAssistant();
+    }
     emit({
       kind: "status",
       status: "idle",
       error: err.message,
       provider,
     });
-    // Drain queue if close event never fires (some spawn failures only emit error).
-    if (outboundQueue.length > 0) {
-      const next = outboundQueue[0];
-      if (next && next.text) {
-        dispatchSend(next.text, next.context || null);
-        outboundQueue.shift();
-      } else {
-        outboundQueue.shift(); // discard malformed entry
-      }
-    }
+    // Some spawn failures emit error before close; the identity guard makes
+    // the later close callback harmless.
+    drainOutboundQueue();
   });
 }
 
@@ -678,6 +656,7 @@ function send(text, context) {
 }
 
 function cancel() {
+  directiveTurnToken += 1;
   if (currentProcess) {
     const proc = currentProcess;
     currentProcess = null;
@@ -689,7 +668,10 @@ function cancel() {
   }
   outboundQueue.length = 0;
   midTurn = false;
-  currentAssistantId = null;
+  if (currentAssistantId) {
+    if (pendingAssistantText) finalizeAssistant();
+    else discardAssistant();
+  }
   emit({ kind: "tool", active: false });
   emit({ kind: "status", status: "idle", cancelled: true });
 }
@@ -744,7 +726,10 @@ function startFresh() {
 
 function hasPreviousConversation() {
   try {
-    return fs.existsSync(conversationPath());
+    const data = JSON.parse(fs.readFileSync(conversationPath(), "utf8"));
+    return Array.isArray(data?.history) && data.history.some((entry) =>
+      entry && (entry.role === "user" || entry.role === "assistant") && entry.text
+    );
   } catch {
     return false;
   }

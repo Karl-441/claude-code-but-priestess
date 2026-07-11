@@ -6,6 +6,7 @@ const { WebSocketServer } = require("ws");
 const chat = require("./chat");
 const vscodeChat = require("./vscode-chat");
 const settings = require("./settings");
+const { isAllowedWsOrigin } = require("./ws-policy");
 
 let wss = null;
 let port = null;
@@ -92,8 +93,9 @@ function handleInbound(ws, raw) {
       authenticated.add(ws);
       sendTo(ws, { type: "auth:ok", version: appVersion });
 
-      // Send VS Code's own conversation state (not Electron's)
-      vscodeChat.init();
+      // Send VS Code's own conversation state (not Electron's). It is loaded
+      // once when this bridge starts; reconnecting must not overwrite a live
+      // in-memory turn from disk.
       sendTo(ws, { type: "chat:history", history: vscodeChat.getHistory() });
       sendTo(ws, { type: "settings:state", state: safeSettingsState() });
       sendTo(ws, {
@@ -174,10 +176,12 @@ function handleInbound(ws, raw) {
     // Conversation lifecycle
     case "conversation:new":
       vscodeChat.startFresh();
+      if (reqId) sendTo(ws, { type: "conversation:new:result", reqId, ok: true });
       sendTo(ws, { type: "chat:history", history: [] });
       break;
     case "conversation:restore":
       vscodeChat.loadConversation();
+      if (reqId) sendTo(ws, { type: "conversation:restore:result", reqId, ok: true });
       sendTo(ws, { type: "chat:history", history: vscodeChat.getHistory() });
       break;
 
@@ -238,15 +242,7 @@ function start(callbacks) {
       host: "127.0.0.1",
       port: 0,
       maxPayload: 4 * 1024 * 1024,
-      verifyClient: (info) => {
-        const origin = (info.origin || "").toLowerCase();
-        if (!origin) return false;
-        if (origin.startsWith("vscode-webview://")) return true;
-        if (origin === "file://") return true; // Electron renderer
-        if (origin.startsWith("http://127.0.0.1:")) return true;
-        if (origin.startsWith("http://localhost:")) return true;
-        return false;
-      }
+      verifyClient: (info) => isAllowedWsOrigin(info.origin)
     });
   }
 
@@ -322,6 +318,8 @@ function start(callbacks) {
   settingsUnsub = settings.subscribe((_state) => {
     broadcast({ type: "settings:state", state: safeSettingsState() });
   });
+
+  vscodeChat.init();
 }
 
 function handleConnection(ws) {
