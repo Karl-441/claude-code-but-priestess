@@ -176,6 +176,7 @@ export class WsClient extends EventEmitter {
       });
 
       this.ws.on("error", (err: Error) => {
+        console.error("PRTS: WebSocket error:", err.message);
         this.updateStatusBar("error");
       });
     } catch (error) {

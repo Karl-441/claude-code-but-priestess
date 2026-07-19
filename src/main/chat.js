@@ -1657,7 +1657,7 @@ function finishSilentTurn(finalText) {
   notify({ kind: "proactive", spoke: true, text });
 }
 
-function finalizeAssistant(finalText) {
+function finalizeAssistant(finalText, opts) {
   // Anything the stream redactor was still holding is, by construction, an
   // incomplete directive prefix (never prose) — drop it.
   directiveTailBuffer = "";
@@ -1665,7 +1665,11 @@ function finalizeAssistant(finalText) {
     finalText = stripDirectiveTags(finalText);
   }
   if (silentTurnKind) {
-    finishSilentTurn(finalText);
+    // When called from a self-heal retry path, suppress the proactive
+    // notification — the retry will finalize again with the real result.
+    if (!opts?.suppressProactiveNotify) {
+      finishSilentTurn(finalText);
+    }
     return;
   }
   if (!pendingAssistantId) {
@@ -1814,7 +1818,8 @@ function handleClaudeStreamEvent(event) {
     for (const block of blocks) {
       if (block?.type === "tool_use") {
         const summary = summarizeToolInput(block.name, block.input);
-        emitTool(true, block.name, summary);
+        // Don't re-emit the tool indicator — the stream_event path already
+        // handled it. Just record the tool entry with summary in history.
         pushTool(block.name, summary, {
           toolUseId: block.id,
           command: toolCommandDetail(block.name, block.input)
@@ -1904,6 +1909,9 @@ function isCodexAssistantEvent(event, type) {
 }
 
 function codexSessionIdFromEvent(event) {
+  // Only use unambiguous session/thread/conversation identifiers.
+  // event.id is a per-event UUID — storing it as a session ID corrupts
+  // session tracking and causes silent resume failures.
   return (
     event.session_id ||
     event.sessionId ||
@@ -1911,7 +1919,7 @@ function codexSessionIdFromEvent(event) {
     event.threadId ||
     event.conversation_id ||
     event.conversationId ||
-    event.id
+    null
   );
 }
 
@@ -2660,11 +2668,10 @@ async function launchProviderTurn({
       resumeRetryInFlight = true;
       claudeResultErrored = false;
       const retrySilentKind = silentTurnKind;
-      if (pendingAssistantId) finalizeAssistant(""); // clears the empty bubble
+      if (pendingAssistantId) finalizeAssistant("", { suppressProactiveNotify: true });
       cleanupInvocation(invocation);
       currentProcess = null;
       currentProvider = null;
-      // Replay keeps the turn's silent nature (finalize just reset it).
       silentTurnKind = retrySilentKind;
       setImmediate(() => dispatchSend(trimmed, {
         userAlreadyShown: true,
