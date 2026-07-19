@@ -514,7 +514,7 @@ function buildPersonaPrompt({
         : Array.isArray(rawBlacklist) ? rawBlacklist : [];
       if (patterns.length) {
         prompt +=
-          "- 以下文件/目录请勿读取（博士设置了隐私过滤，格式与 .gitignore 相同）：\n" +
+          "- 以下文件/目录请不要读取（博士的偏好，格式与 .gitignore 相同，请尽量遵守）：\n" +
           patterns.map((p) => `  · ${p}`).join("\n") + "\n";
       }
       prompt += "\n";

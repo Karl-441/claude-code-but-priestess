@@ -36,6 +36,7 @@ let midTurn = false;
 let outboundQueue = [];
 let vscodeSessionIds = {};
 let staleRetryInFlight = false;
+let providerErrorText = "";
 
 // Per-turn streaming state
 let pendingAssistantText = "";
@@ -133,9 +134,6 @@ function beginAssistant() {
   rememberedThisTurn.clear();
   lastEmittedMood = null;
   currentToolName = null;
-  claudeModelInvalid = false;
-  claudeResultErrored = false;
-  launchedWithSession = false;
   history.push({
     id: currentAssistantId,
     role: "assistant",
@@ -336,17 +334,6 @@ function handleClaudeLine(line) {
 
   if (event.type === "result") {
     vscodeSessionIds.claude = event.session_id;
-    // Detect model_not_found — flag for fallback retry in close handler.
-    if (event.is_error && event.error === "model_not_found") {
-      claudeModelInvalid = true;
-    }
-    if (event.message?.model === "<synthetic>") {
-      claudeModelInvalid = true;
-    }
-    // Detect empty error result — flag for stale-session retry.
-    if (event.is_error && !pendingAssistantText.trim()) {
-      claudeResultErrored = true;
-    }
     emit({ kind: "tool", active: false });
     if (event.is_error) {
       providerErrorText = typeof event.result === "string"
@@ -531,7 +518,6 @@ function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
     return;
   }
 
-  launchedWithSession = Boolean(vscodeSessionIds[provider]);
   emit({
     kind: "status",
     status: "running",
@@ -585,14 +571,15 @@ function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
     midTurn = false;
 
     // Self-heal: drop stale session on "not found" errors and retry once.
-    const sessionLost = /no conversation found|session.*not found|invalid.*session/i.test(stderr);
+    // Covers Claude ("No conversation found"), Codex ("no rollout found"),
+    // and provider-level structured error text captured during streaming.
+    const sessionLost = /no conversation found|session.*not found|no rollout found|invalid.*session/i.test(stderr)
+      || (providerErrorText && /no conversation found|no rollout found/i.test(providerErrorText));
     if (sessionLost && !staleRetryInFlight) {
       staleRetryInFlight = true;
       vscodeSessionIds[provider] = null;
       if (currentAssistantId) discardAssistant();
       saveConversation();
-      // Retry with a fresh session. staleRetryInFlight stays true until the
-      // retry succeeds — prevents loops if the fresh session also fails.
       dispatchSend(trimmed, context);
       return;
     }
@@ -611,7 +598,6 @@ function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
       });
     } else {
       staleRetryInFlight = false;
-      modelFallbackInFlight = false;
       emit({ kind: "status", status: "idle", provider });
     }
 
@@ -650,7 +636,6 @@ function send(text, context) {
     return { ok: true, queued: true, queueLength: outboundQueue.length };
   }
   staleRetryInFlight = false;
-  modelFallbackInFlight = false;
   dispatchSend(trimmed, context || null);
   return { ok: true };
 }

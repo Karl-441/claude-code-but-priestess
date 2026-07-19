@@ -38,4 +38,8 @@ if (failures.length) {
   }
 }
 
-process.exit(failed > 0 ? 1 : 0);
+// Don't use process.exit — let the runtime finish normally so node --test
+// wrappers and CI reporters get accurate results.
+if (failed > 0 && process.env.NODE_TEST_CONTEXT === undefined) {
+  process.exitCode = 1;
+}

@@ -161,6 +161,7 @@ function shouldRunActivityCheck(now) {
 
 function shouldRunProactive(now) {
   if (settings.get("waifuMode") !== true) return false;
+  if (proactiveLevel() !== "full") return false; // only agent mode
   if (now - lastProactiveAttemptAt < intervalMs()) return false;
   if (inQuietHours()) return false;
   const day = localDayKey();
