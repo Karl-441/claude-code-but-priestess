@@ -52,6 +52,21 @@
         "command": "prts.suggestFix",
         "title": "PRTS: Suggest Fix for Selected Code",
         "icon": "$(lightbulb)"
+      },
+      {
+        "command": "prts.explainError",
+        "title": "PRTS: Explain Error at Cursor",
+        "icon": "$(question)"
+      },
+      {
+        "command": "prts.reviewFile",
+        "title": "PRTS: Review Current File",
+        "icon": "$(search)"
+      },
+      {
+        "command": "prts.summarizeChanges",
+        "title": "PRTS: Summarize Recent Git Changes",
+        "icon": "$(git-commit)"
       }
     ],
     "viewsContainers": {
@@ -111,6 +126,21 @@
         {
           "command": "prts.toggleVibeCoding",
           "group": "3_mode@1"
+        },
+        {
+          "command": "prts.suggestFix",
+          "when": "editorTextFocus",
+          "group": "4_fix@1"
+        },
+        {
+          "command": "prts.explainError",
+          "when": "editorTextFocus",
+          "group": "4_fix@2"
+        },
+        {
+          "command": "prts.reviewFile",
+          "when": "editorTextFocus",
+          "group": "4_fix@3"
         }
       ],
       "commandPalette": [
@@ -133,6 +163,21 @@
       {
         "command": "prts.toggleVibeCoding",
         "key": "ctrl+shift+alt+v",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "prts.explainError",
+        "key": "ctrl+shift+alt+e",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "prts.reviewFile",
+        "key": "ctrl+shift+alt+r",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "prts.summarizeChanges",
+        "key": "ctrl+shift+alt+g",
         "when": "editorTextFocus"
       }
     ],

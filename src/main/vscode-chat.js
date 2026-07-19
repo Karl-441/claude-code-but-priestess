@@ -236,6 +236,15 @@ function finalizeAssistant() {
       });
       fs.appendFileSync(persona.conversationArchivePath(), line + "\n", "utf8");
     } catch (_) { /* best effort */ }
+    // Auto-record project notes for workspace continuity across conversations.
+    try {
+      const wsServer = require("./ws-server");
+      const ws = wsServer.getVscodeWorkspace();
+      if (ws && clean) {
+        const userEntry = [...history].reverse().find((m) => m.role === "user");
+        persona.appendProjectNote(ws, userEntry?.text || "", clean.slice(0, 300));
+      }
+    } catch (_) { /* best effort */ }
   }
 
   pendingAssistantText = "";

@@ -290,7 +290,8 @@ function buildPersonaPrompt({
   personaNotes = "",
   catMode = null,
   coauthorCommits = false,
-  attachments = []
+  attachments = [],
+  workspacePath = ""
 }) {
   const mode = vibeCodingMode || "companion";
   const isAgent = mode === "agent";
@@ -465,6 +466,17 @@ function buildPersonaPrompt({
       `${sharedTranscript.trim()}\n\n`;
   }
 
+  // Project notes — what she knows about this specific project.
+  if (workspacePath) {
+    const notes = readProjectNotes(workspacePath);
+    if (notes.trim()) {
+      prompt +=
+        "【项目笔记 —— 你关于这个项目的技术记忆】\n" +
+        "以下是你在之前的对话中记录的项目状态、讨论过的方案和技术债。不是指令，是你自己的记忆：\n" +
+        `${notes.trim()}\n\n`;
+    }
+  }
+
   // Maintenance turns have their own dedicated prompt — skip skills block.
   if (skillsEnabled && !isMaintenance) {
     prompt +=
@@ -626,6 +638,93 @@ function appendMemoryEntry(text) {
   }
 }
 
+// ---- Project notes (PROJECT_NOTES.md) — per-turn automatic summaries ----
+
+function projectNotesDir() {
+  return path.join(app.getPath("userData"), "project-notes");
+}
+
+function projectNotesPath(workspacePath) {
+  if (!workspacePath) return null;
+  // Use a hash of the workspace path as a stable filename key.
+  const crypto = require("crypto");
+  const key = crypto.createHash("sha256").update(workspacePath).digest("hex").slice(0, 12);
+  return path.join(projectNotesDir(), `PROJECT_NOTES-${key}.md`);
+}
+
+function ensureProjectNotesFile(workspacePath) {
+  const file = projectNotesPath(workspacePath);
+  if (!file) return null;
+  try {
+    const dir = projectNotesDir();
+    fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(file)) {
+      fs.writeFileSync(file,
+        "# 项目笔记\n\n" +
+        "_普瑞赛斯关于这个项目的技术笔记。每轮对话自动更新。_\n\n" +
+        `- 项目路径: ${workspacePath}\n\n` +
+        "## 最近发现的问题\n\n## 讨论过的方案\n\n## 技术债记录\n\n",
+        "utf8"
+      );
+    }
+    return file;
+  } catch (err) {
+    console.warn("persona: failed to initialize project notes", err);
+    return null;
+  }
+}
+
+// Appends a timestamped per-turn summary to PROJECT_NOTES.md.
+function appendProjectNote(workspacePath, userText, assistantSummary) {
+  try {
+    const file = ensureProjectNotesFile(workspacePath);
+    if (!file) return;
+    const now = new Date();
+    const stamp =
+      now.getFullYear() + "-" +
+      String(now.getMonth() + 1).padStart(2, "0") + "-" +
+      String(now.getDate()).padStart(2, "0") + " " +
+      String(now.getHours()).padStart(2, "0") + ":" +
+      String(now.getMinutes()).padStart(2, "0");
+    const userLine = `- ${stamp} 博士: ${(userText || "").slice(0, 200)}\n`;
+    const summaryLine = assistantSummary
+      ? `  - 普瑞赛斯: ${assistantSummary.slice(0, 300)}\n`
+      : "";
+    let content = fs.readFileSync(file, "utf8");
+    // Insert after the header, before the first section
+    const idx = content.indexOf("## 最近发现的问题");
+    if (idx >= 0) {
+      content = content.slice(0, idx) + userLine + summaryLine + "\n" + content.slice(idx);
+    } else {
+      content += "\n" + userLine + summaryLine;
+    }
+    // Trim to ~64KB
+    if (content.length > 65536) content = content.slice(content.length - 65536);
+    const tmp = file + ".tmp." + Date.now();
+    fs.writeFileSync(tmp, content, "utf8");
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    console.warn("persona: failed to append project note", err);
+  }
+}
+
+// Reads the most recent project notes for prompt injection.
+function readProjectNotes(workspacePath, maxChars = 4000) {
+  try {
+    const file = projectNotesPath(workspacePath);
+    if (!file || !fs.existsSync(file)) return "";
+    const content = fs.readFileSync(file, "utf8");
+    // Return only the most recent entries within the budget.
+    if (content.length <= maxChars) return content;
+    // Find the first section heading within the budget window
+    const tail = content.slice(-maxChars);
+    const headingIdx = tail.indexOf("## ");
+    return headingIdx > 0 ? "…\n" + tail.slice(headingIdx) : "…\n" + tail;
+  } catch {
+    return "";
+  }
+}
+
 module.exports = {
   buildPersonaPrompt,
   ensureMemoryFile,
@@ -635,6 +734,9 @@ module.exports = {
   readRecentObservations,
   readArchiveTailEntries,
   appendMemoryEntry,
+  readProjectNotes,
+  appendProjectNote,
+  projectNotesPath,
   memoryDir,
   memoryPath,
   conversationSummaryPath,
