@@ -9,6 +9,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { app } = require("electron");
+const settings = require("./settings");
 const platform = require("./platform");
 const personaPrts = require("./persona-prts");
 

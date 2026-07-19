@@ -1625,6 +1625,7 @@ function renderHistory(history) {
     empty.textContent = t("chat_empty_hint");
     chatStream.append(empty);
     currentAssistantId = null;
+    lastAppliedFilePath = null;
     checkAndUpdateHtmlPreview();
     return;
   }

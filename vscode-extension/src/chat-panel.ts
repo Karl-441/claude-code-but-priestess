@@ -402,13 +402,21 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private applyFix(filePath: string, newCode: string, lineStart: number) {
+    // Validate: file must exist and be within the workspace.
     const uri = vscode.Uri.file(filePath);
-    // Write suggested code to a temp file for diff comparison.
-    const tmpUri = vscode.Uri.file(filePath + ".prts-suggestion.tmp");
     try {
-      fs.writeFileSync(tmpUri.fsPath, newCode, "utf8");
-      // Open VS Code diff view: original (read-only) vs. suggestion.
-      vscode.commands.executeCommand("vscode.diff", tmpUri, uri,
+      if (!fs.existsSync(uri.fsPath)) {
+        vscode.window.showErrorMessage("PRTS: File not found: " + filePath);
+        return;
+      }
+      // Write suggestion to a temp file (in OS temp dir, cleaned up on exit).
+      const os = require("os");
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prts-suggestion-"));
+      const tmpFile = path.join(tmpDir, path.basename(filePath));
+      fs.writeFileSync(tmpFile, newCode, "utf8");
+      const tmpUri = vscode.Uri.file(tmpFile);
+      // Open diff: original (left, read-only) vs. suggestion (right, editable).
+      vscode.commands.executeCommand("vscode.diff", uri, tmpUri,
         `PRTS Suggestion — ${path.basename(filePath)}`);
     } catch (err) {
       vscode.window.showErrorMessage("PRTS: Failed to create suggestion diff: " +
