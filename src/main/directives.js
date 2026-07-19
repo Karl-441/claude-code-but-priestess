@@ -1,8 +1,8 @@
 // Shared directive parsing — extracted from chat.js so that both chat.js and
 // vscode-chat.js can use the same regexes and handling logic without divergence.
 // Currently used by chat.js; vscode-chat.js uses its own copies (to be migrated).
-
-const persona = require("./persona");
+// persona is lazy-required inside handleDirective to avoid pulling in electron
+// when this module is imported by tests.
 
 // ---- Regex catalogue ----
 
@@ -94,7 +94,7 @@ function handleDirective(full, mood, skillName, skillArg, observe, remember,
     }
   } else if (remember !== undefined) {
     const text = (remember || "").trim();
-    if (text) persona.appendMemoryEntry(text);
+    if (text) require("./persona").appendMemoryEntry(text);
   } else {
     return { sawSilent: true };
   }
