@@ -47,6 +47,11 @@
         "command": "prts.showContextInfo",
         "title": "PRTS: Show Editor Context Info",
         "icon": "$(info)"
+      },
+      {
+        "command": "prts.suggestFix",
+        "title": "PRTS: Suggest Fix for Selected Code",
+        "icon": "$(lightbulb)"
       }
     ],
     "viewsContainers": {

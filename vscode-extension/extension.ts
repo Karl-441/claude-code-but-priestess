@@ -115,6 +115,47 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Vibe coding: suggest a fix for the selected code / current line
+  context.subscriptions.push(
+    vscode.commands.registerCommand("prts.suggestFix", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage("PRTS: No active editor.");
+        return;
+      }
+      const doc = editor.document;
+      const sel = editor.selection;
+      // Use selection if non-empty, otherwise the current line.
+      const range = sel.isEmpty
+        ? doc.lineAt(sel.active.line).range
+        : sel;
+      const code = doc.getText(range);
+      const file = doc.fileName.split(/[\\/]/).pop();
+      const line = range.start.line + 1;
+      const lang = doc.languageId;
+
+      // Find diagnostics at this location
+      const diags = vscode.languages.getDiagnostics(doc.uri)
+        .filter((d) => d.range.intersection(range));
+      const diagLines = diags.length
+        ? diags.map((d) => `  - [${d.severity === vscode.DiagnosticSeverity.Error ? "error" : "warning"}] L${d.range.start.line + 1}: ${d.message}`).join("\n")
+        : "";
+
+      const prompt =
+        `【博士的修复请求】\n` +
+        `- 文件: ${file} (${lang})\n` +
+        `- 位置: 第 ${line} 行\n` +
+        (diagLines ? `- 诊断:\n${diagLines}\n` : "") +
+        `\n博士选中的代码:\n\`\`\`${lang}\n${code}\n\`\`\`\n` +
+        `\n请分析这段代码的问题并给出修复方案。用代码块展示修改后的完整代码。`;
+
+      if (wsClient && wsClient.isConnected()) {
+        wsClient.send("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
+        vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
+      }
+    })
+  );
+
   // ---- Window focus tracking ----
 
   context.subscriptions.push(

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as fs from "fs";
 import { generateApiShim } from "./api-shim";
 import { ContextCapture } from "./context-capture";
 
@@ -227,6 +228,22 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       max-width: 100%;
       opacity: 0.75;
     }
+    /* Apply fix button on code blocks */
+    .apply-fix-btn {
+      display: block;
+      margin-top: 4px;
+      padding: 2px 10px;
+      font-size: 0.75em;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      float: right;
+    }
+    .apply-fix-btn:hover { background: var(--vscode-button-hoverBackground); }
+    .code-block-wrapper { overflow: hidden; }
+
     /* HTML preview panel */
     .preview-divider { display: none; }
     .html-preview { display: none; }
@@ -336,6 +353,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
           });
         });
         break;
+      case "fix:apply":
+        // Open a diff view comparing the suggested fix against the original file.
+        this.applyFix(msg.filePath, msg.newCode, msg.lineStart || 0);
+        break;
       case "preview:open":
       case "preview:close":
       case "html:open-in-browser":
@@ -378,5 +399,20 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         ? "dark"
         : "light";
     webview.postMessage({ type: "theme", scheme });
+  }
+
+  private applyFix(filePath: string, newCode: string, lineStart: number) {
+    const uri = vscode.Uri.file(filePath);
+    // Write suggested code to a temp file for diff comparison.
+    const tmpUri = vscode.Uri.file(filePath + ".prts-suggestion.tmp");
+    try {
+      fs.writeFileSync(tmpUri.fsPath, newCode, "utf8");
+      // Open VS Code diff view: original (read-only) vs. suggestion.
+      vscode.commands.executeCommand("vscode.diff", tmpUri, uri,
+        `PRTS Suggestion — ${path.basename(filePath)}`);
+    } catch (err) {
+      vscode.window.showErrorMessage("PRTS: Failed to create suggestion diff: " +
+        (err as Error).message);
+    }
   }
 }
