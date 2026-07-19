@@ -823,6 +823,12 @@ function drainOutboundQueue() {
   if (result?.ok) {
     outboundQueue.shift();
     emitQueueState();
+  } else if (outboundQueue.length > 0 && result?.reason !== "busy" && result?.reason !== "quitting") {
+    // Dispatch failed (e.g. missing-cli) — retry after a delay so the queue
+    // isn't permanently stuck when the CLI becomes available again.
+    setTimeout(() => {
+      if (!quitPending && !currentProcess) drainOutboundQueue();
+    }, 5000).unref();
   }
 }
 
@@ -1660,6 +1666,7 @@ function finishSilentTurn(finalText) {
 function finalizeAssistant(finalText, opts) {
   // Anything the stream redactor was still holding is, by construction, an
   // incomplete directive prefix (never prose) — drop it.
+  const hadError = opts?.hadError === true;
   directiveTailBuffer = "";
   if (typeof finalText === "string" && finalText) {
     finalText = stripDirectiveTags(finalText);
@@ -1682,8 +1689,11 @@ function finalizeAssistant(finalText, opts) {
       appendAssistant(finalText);
     } else {
       // No bubble was opened and no text arrived — if tools ran this turn,
-      // speak a short summary of them instead of leaving her silent.
-      emitToolOnlyFallback();
+      // speak a short summary of them instead of leaving her silent. Skip
+      // when the turn errored — a cheerful summary after a crash is misleading.
+      if (!hadError) {
+        emitToolOnlyFallback();
+      }
       return;
     }
   }
@@ -2740,7 +2750,8 @@ async function launchProviderTurn({
         "Claude 返回了一个空的错误回复。请再试一次，或确认 `claude` CLI 已登录且额度未用尽。"
       );
     }
-    if (pendingAssistantId) finalizeAssistant("");
+    const turnHadError = (code !== 0 && code !== null) || claudeResultErrored;
+    if (pendingAssistantId) finalizeAssistant("", { hadError: turnHadError });
     cleanupInvocation(invocation);
     currentProcess = null;
     currentProvider = null;
