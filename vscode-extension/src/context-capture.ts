@@ -42,10 +42,17 @@ export interface DiagnosticDetail {
 }
 
 export interface ActivityEvent {
-  kind: "save" | "task-start" | "task-end" | "task-error" | "git-commit" | "git-branch-switch" | "file-open";
+  kind: "save" | "task-start" | "task-end" | "task-error" | "git-commit" | "git-branch-switch" | "file-open" | "terminal-output";
   detail: string;
   timestamp: number;
   file: string;
+}
+
+export interface TerminalEvent {
+  kind: "build-error" | "test-fail" | "test-pass" | "lint-warning";
+  detail: string;
+  source: string; // terminal name
+  timestamp: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +166,29 @@ export class ContextCapture {
 
     // ---- Git (optional, best-effort) ----
     this.tryWatchGit(context);
+
+    // ---- Terminal output monitoring ----
+    try {
+      let terminalBuffer = "";
+      let terminalDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+      this.disposables.push(
+        (vscode.window as any).onDidWriteTerminalData((e: any) => {
+          terminalBuffer += String(e.data || "");
+          if (terminalDebounceTimer) clearTimeout(terminalDebounceTimer);
+          terminalDebounceTimer = setTimeout(() => {
+            terminalDebounceTimer = null;
+            const txt = terminalBuffer;
+            terminalBuffer = "";
+            const parsed = this.parseTerminalOutput(txt);
+            if (parsed) {
+              this.wsClient.send("vscode:terminal-event", parsed);
+            }
+          }, 500); // debounce: wait 500ms of silence before parsing
+        })
+      );
+    } catch {
+      // onDidWriteTerminalData unavailable in some VS Code versions
+    }
 
     // Send initial context
     this.refreshContext(vscode.window.activeTextEditor);
@@ -349,6 +379,42 @@ export class ContextCapture {
       this.lastSaveTs = now;
     }
     this.wsClient.send(type, payload);
+  }
+
+  // -----------------------------------------------------------------------
+  // Internals — terminal output parsing
+  // -----------------------------------------------------------------------
+
+  private parseTerminalOutput(text: string): TerminalEvent | null {
+    // Detect build/test/lint results from terminal output.
+    if (/Build failed|Compilation failed|error TS\d+/.test(text)) {
+      const lines = text.split("\n").filter((l: string) => /error|Error|FAIL/i.test(l));
+      return {
+        kind: "build-error",
+        detail: lines.slice(0, 5).join("\n") || "Build/compilation error detected",
+        source: "terminal",
+        timestamp: Date.now(),
+      };
+    }
+    if (/(\d+)\s+failing|Tests:\s+\d+\s+failed|FAIL\s/.test(text)) {
+      const failMatch = text.match(/(\d+)\s+failing/);
+      const failCount = failMatch ? parseInt(failMatch[1], 10) : 1;
+      return {
+        kind: "test-fail",
+        detail: `${failCount} test${failCount > 1 ? "s" : ""} failing`,
+        source: "terminal",
+        timestamp: Date.now(),
+      };
+    }
+    if (/All tests passed|Tests:\s+\d+\s+passed.*0\s+failed/.test(text)) {
+      return {
+        kind: "test-pass",
+        detail: "All tests passed",
+        source: "terminal",
+        timestamp: Date.now(),
+      };
+    }
+    return null;
   }
 
   // -----------------------------------------------------------------------

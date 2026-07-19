@@ -2918,6 +2918,9 @@ function buildVibeProactivePrompt(opts) {
   if (opts?.diagnosticImprovement) {
     return buildImprovementPrompt(opts.diagnosticImprovement);
   }
+  if (opts?.terminalEvent) {
+    return buildTerminalPrompt(opts.terminalEvent);
+  }
   if (opts?.activityContext) {
     return buildActivityProactivePrompt();
   }
@@ -2933,6 +2936,21 @@ function buildImprovementPrompt(diag) {
     "用你自然的风格，给一句真诚的、属于普瑞赛斯的肯定。不用长，一两句就够了。",
     "如果只是偶然清零（比如关了文件），可以说 [[silent]]。",
   ];
+  return lines.join("\n");
+}
+
+function buildTerminalPrompt(evt) {
+  const lines = [
+    buildProactivePrompt(),
+    "",
+    "博士刚才运行了终端命令。结果是：",
+    evt.detail,
+  ];
+  if (evt.kind === "build-error") {
+    lines.push("", "看起来构建/编译出错了。用你自然的风格轻声告知博士，可以帮他一起看看错误原因。如果你觉得只是暂时性问题，可以说 [[silent]]。");
+  } else if (evt.kind === "test-fail") {
+    lines.push("", "看起来测试没通过。用你自然的风格提醒博士，建议他看看失败的测试。如果你觉得只是暂时性问题，可以说 [[silent]]。");
+  }
   return lines.join("\n");
 }
 

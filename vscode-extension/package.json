@@ -67,6 +67,11 @@
         "command": "prts.summarizeChanges",
         "title": "PRTS: Summarize Recent Git Changes",
         "icon": "$(git-commit)"
+      },
+      {
+        "command": "prts.generateTests",
+        "title": "PRTS: Generate Tests for Selected Code",
+        "icon": "$(beaker)"
       }
     ],
     "viewsContainers": {
@@ -178,6 +183,11 @@
       {
         "command": "prts.summarizeChanges",
         "key": "ctrl+shift+alt+g",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "prts.generateTests",
+        "key": "ctrl+shift+alt+t",
         "when": "editorTextFocus"
       }
     ],

@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { WsClient } from "./src/ws-client";
 import { ChatPanelProvider } from "./src/chat-panel";
 import { ContextCapture } from "./src/context-capture";
+import { InlineCompletionProvider } from "./src/inline-provider";
 
 let wsClient: WsClient | null = null;
 let contextCapture: ContextCapture | null = null;
@@ -20,6 +21,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.window.registerWebviewViewProvider("prts.chatView", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true },
     })
+  );
+
+  // Inline completion provider (ghost text) — registered for all languages.
+  const inlineProvider = new InlineCompletionProvider(wsClient);
+  context.subscriptions.push(
+    vscode.languages.registerInlineCompletionItemProvider(
+      { pattern: "**" }, inlineProvider
+    )
   );
 
   // ---- Commands ----
@@ -256,6 +265,50 @@ export function activate(context: vscode.ExtensionContext) {
         }
       } catch (err) {
         vscode.window.showErrorMessage("PRTS: Failed to summarize changes — " + (err as Error).message);
+      }
+    })
+  );
+
+  // Vibe coding: generate tests for selected code
+  context.subscriptions.push(
+    vscode.commands.registerCommand("prts.generateTests", async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage("PRTS: No active editor.");
+        return;
+      }
+      const doc = editor.document;
+      const sel = editor.selection;
+      const range = sel.isEmpty
+        ? new vscode.Range(0, 0, doc.lineCount - 1, doc.lineAt(doc.lineCount - 1).text.length)
+        : sel;
+      const code = doc.getText(range);
+      const file = doc.fileName.split(/[\\/]/).pop();
+      const lang = doc.languageId;
+      // Truncate very large selections
+      const MAX_SEL = 20_000;
+      const truncated = code.length > MAX_SEL
+        ? code.slice(0, MAX_SEL) + `\n…(选中代码共 ${code.length} 字符，已截断)`
+        : code;
+
+      // Generate a test scenario prompt based on language
+      const testLang = lang === "typescript" || lang === "javascript" ? "Jest" :
+        lang === "python" ? "pytest" : lang === "java" ? "JUnit" : "单元测试";
+      const prompt =
+        `【博士的请求 — 生成测试】\n` +
+        `- 文件: ${file} (${lang})\n` +
+        `- 测试框架: ${testLang}\n` +
+        (sel.isEmpty ? `- 范围: 整个文件 (${doc.lineCount} 行)\n` : `- 范围: L${range.start.line + 1}-L${range.end.line + 1}\n`) +
+        `\n请为以下代码生成${testLang}测试，覆盖：\n` +
+        `1. 正常路径（happy path）\n` +
+        `2. 边界条件（null/undefined、空数组、极值）\n` +
+        `3. 错误路径（异常处理）\n` +
+        `\n用代码块展示测试代码。\n` +
+        `\n\`\`\`${lang}\n${truncated}\n\`\`\``;
+
+      if (wsClient && wsClient.isConnected()) {
+        wsClient.send("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
+        vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
       }
     })
   );

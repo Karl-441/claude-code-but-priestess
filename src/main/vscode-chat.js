@@ -729,8 +729,66 @@ function hasPreviousConversation() {
   }
 }
 
+// Lightweight inline completion — spawns a one-shot CLI subprocess per request.
+// Does NOT touch history, archive, or any shared turn state.
+const COMPLETION_TIMEOUT_MS = 4000;
+const COMPLETION_MAX_TOKENS = 64;
+
+async function complete(prefix, file, language) {
+  if (midTurn) return null; // don't compete with an active turn
+  const provider = chat.getProviderAvailability().activeProvider || "claude";
+  if (provider === "priestess") return null; // built-in backend not supported
+
+  const prompt =
+    `Complete this code. Only output the completion text, no markdown, no explanation.\n` +
+    `File: ${file || "unknown"} (${language || ""})\n\n` +
+    prefix;
+
+  return new Promise((resolve) => {
+    const { execFile } = require("child_process");
+    let command, args;
+
+    if (provider === "codex") {
+      command = "codex";
+      args = ["exec", "-p", prompt, "--max-tokens", String(COMPLETION_MAX_TOKENS), "--json"];
+    } else {
+      // Claude: -p for single-turn, --output-format text for raw text response
+      command = "claude";
+      args = ["-p", prompt, "--output-format", "text", "--max-tokens", String(COMPLETION_MAX_TOKENS)];
+      const claudeModel = String(settings.get("claudeModel") || "").trim();
+      if (claudeModel) args.push("--model", claudeModel);
+    }
+
+    const child = execFile(command, args, {
+      timeout: COMPLETION_TIMEOUT_MS,
+      maxBuffer: 16 * 1024,
+      encoding: "utf8",
+    }, (err, stdout) => {
+      if (err) {
+        if (err.killed) return resolve(null); // timeout
+        return resolve(null);
+      }
+      const text = (stdout || "").trim();
+      // Filter out common prefixes the model sometimes emits despite instructions
+      const cleaned = text
+        .replace(/^```[\w]*\n?/i, "")
+        .replace(/\n?```$/i, "")
+        .trim();
+      // Only return if it looks like a real completion (not an apology/explanation)
+      if (cleaned && cleaned.length < 2000 && !/^(I|here|sure|certainly|this is)/i.test(cleaned)) {
+        resolve(cleaned);
+      } else {
+        resolve(null);
+      }
+    });
+
+    child.on("error", () => resolve(null));
+  });
+}
+
 module.exports = {
   send,
+  complete,
   cancel,
   clear,
   getHistory,

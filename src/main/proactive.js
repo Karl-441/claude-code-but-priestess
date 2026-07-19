@@ -134,6 +134,30 @@ function shouldRunDiagnosticCheck(now) {
   return true;
 }
 
+function shouldRunTerminalCheck(now) {
+  if (!getWsServer().isVscodeActive()) return false;
+  if (proactiveLevel() === "silent") return false; // companion mode
+  if (now - lastActivityAttemptAt < activityCooldownMs()) return false;
+  if (chat.isBusy()) return false;
+  if (inQuietHours()) return false;
+  const day = localDayKey();
+  if (daily.day !== day) {
+    daily = { day, count: 0 };
+    lastDiagnosticAttemptAt = 0;
+    lastActivityAttemptAt = 0;
+    lastProactiveAttemptAt = 0;
+  }
+  if (daily.count >= dailyCap()) return false;
+  if (!hasCliProvider()) return false;
+  const evt = getWsServer().getLatestTerminalEvent();
+  if (!evt) return false;
+  // Only trigger on build errors or test failures (not test passes).
+  if (evt.kind !== "build-error" && evt.kind !== "test-fail") return false;
+  const lastTs = chat.getLastConversationTs();
+  if (lastTs && now - lastTs < cooldownMs()) return false;
+  return true;
+}
+
 function shouldRunActivityCheck(now) {
   if (!getWsServer().isVscodeActive()) return false;
   if (proactiveLevel() !== "full") return false; // only agent mode
@@ -200,7 +224,7 @@ function shouldRunMaintenance(now) {
 function tick() {
   const now = Date.now();
   try {
-    // Priority: diagnostics > activity > generic proactive > maintenance
+    // Priority: diagnostics > terminal > activity > generic proactive > maintenance
     // Each tick fires at most one self-turn to avoid flooding the model.
 
     const diagResult = shouldRunDiagnosticCheck(now);
@@ -213,6 +237,15 @@ function tick() {
           daily.count += 1;
         }
       } else if (chat.sendProactive({ diagnosticContext: diag })?.ok) {
+        daily.count += 1;
+      }
+      return;
+    }
+
+    if (shouldRunTerminalCheck(now)) {
+      lastActivityAttemptAt = now;
+      const evt = getWsServer().getLatestTerminalEvent();
+      if (chat.sendProactive({ terminalEvent: evt })?.ok) {
         daily.count += 1;
       }
       return;
