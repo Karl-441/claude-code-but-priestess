@@ -76,8 +76,10 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       characterBaseUri: characterDir.toString().replace(/\/?$/, "/"),
     });
 
+    // Stamped up front so the first paint already matches the editor; the
+    // "theme" message then keeps it in sync as the theme changes.
     return `<!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="${this.themeScheme()}">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -371,12 +373,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private syncTheme(webview: vscode.Webview) {
+  private themeScheme(): "dark" | "light" {
     const kind = vscode.window.activeColorTheme.kind;
-    const scheme =
-      kind === vscode.ColorThemeKind.Dark || kind === vscode.ColorThemeKind.HighContrast
-        ? "dark"
-        : "light";
-    webview.postMessage({ type: "theme", scheme });
+    return kind === vscode.ColorThemeKind.Dark || kind === vscode.ColorThemeKind.HighContrast
+      ? "dark"
+      : "light";
+  }
+
+  private syncTheme(webview: vscode.Webview) {
+    webview.postMessage({ type: "theme", scheme: this.themeScheme() });
   }
 }

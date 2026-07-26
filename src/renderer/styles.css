@@ -57,6 +57,27 @@
   }
 }
 
+/* Hosts that own their own appearance stamp data-theme on <html> and are then
+   the authority, in both directions. The VS Code sidebar needs this: its
+   background follows the editor theme while prefers-color-scheme follows the
+   OS, so the two disagree whenever a light desktop runs a dark editor theme
+   (or the reverse). An attribute selector outranks the :root rules above
+   without depending on source order. Nothing sets the attribute in the
+   Electron popover, where the media query alone is already correct. */
+:root[data-theme="light"] {
+  --text: #1a5d2e;
+  --text-on-her: #103d1d;
+  --muted: #2f6a44;
+  --text-halo: 0 0 2px rgba(255, 255, 255, 0.55), 0 1px 1px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] {
+  --text: #d8f6e4;
+  --text-on-her: #eafff5;
+  --muted: #8fc7a4;
+  --text-halo: 0 0 2px rgba(0, 0, 0, 0.60), 0 1px 1px rgba(0, 0, 0, 0.40);
+}
+
 * {
   box-sizing: border-box;
 }
