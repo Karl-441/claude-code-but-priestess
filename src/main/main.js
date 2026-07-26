@@ -23,6 +23,13 @@ const proactive = require("./proactive");
 const updater = require("./updater");
 const priestessProvider = require("./priestess-provider");
 const { spawnCli } = require("./cli-spawn");
+const {
+  codexVersionsMatch,
+  compatibleReasoningEffort,
+  normalizeCodexVersion,
+  parseCodexModelCatalog,
+  parseTopLevelTomlString
+} = require("./codex-model-catalog");
 const wsServer = require("./ws-server");
 
 let conversationFile = null;
@@ -1025,8 +1032,22 @@ const MENU_TEXT = {
     personaNotes: "补充校准…",
     modelClaude: "模型（Claude）",
     modelCodex: "模型（Codex）",
+    reasoningClaude: "推理强度（Claude）",
+    reasoningCodex: "推理强度（Codex）",
     defaultClaude: "默认（CLI/账户）",
     defaultCodex: "默认（CLI/config）",
+    defaultReasoning: "默认（CLI/config）",
+    defaultReasoningValue: (effort) => `默认（CLI/config：${effort}）`,
+    reasoningLevel: (effort) => ({
+      none: "None · 不推理",
+      minimal: "Minimal · 最轻",
+      low: "Low · 轻量",
+      medium: "Medium · 均衡",
+      high: "High · 深入",
+      xhigh: "XHigh · 很高",
+      max: "Max · 最大",
+      ultra: "Ultra · 极限"
+    })[effort] || effort,
     opusAlias: "Opus（最新别名）",
     sonnetAlias: "Sonnet（最新别名）",
     haikuAlias: "Haiku（最新别名）",
@@ -1097,8 +1118,22 @@ const MENU_TEXT = {
     personaNotes: "Persona supplement…",
     modelClaude: "Model (Claude)",
     modelCodex: "Model (Codex)",
+    reasoningClaude: "Reasoning effort (Claude)",
+    reasoningCodex: "Reasoning effort (Codex)",
     defaultClaude: "Default (CLI/account)",
     defaultCodex: "Default (CLI/config)",
+    defaultReasoning: "Default (CLI/config)",
+    defaultReasoningValue: (effort) => `Default (CLI/config: ${effort})`,
+    reasoningLevel: (effort) => ({
+      none: "None",
+      minimal: "Minimal",
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      xhigh: "XHigh",
+      max: "Max",
+      ultra: "Ultra"
+    })[effort] || effort,
     opusAlias: "Opus (latest alias)",
     sonnetAlias: "Sonnet (latest alias)",
     haikuAlias: "Haiku (latest alias)",
@@ -1280,8 +1315,10 @@ const MODEL_PRESETS = {
 
 let codexModelPresetCache = {
   command: null,
+  version: "",
   ts: 0,
   presets: null,
+  catalog: null,
   refreshing: false
 };
 
@@ -1289,56 +1326,59 @@ function modelSettingKey(provider) {
   return provider === "codex" ? "codexModel" : "claudeModel";
 }
 
-function parseCodexModelCatalog(stdout) {
-  const raw = String(stdout || "").trim();
-  const line = raw
-    .split(/\r?\n/)
-    .map((part) => part.trim())
-    .find((part) => part.startsWith("{") && part.includes("\"models\""));
-  for (const candidate of [raw, line].filter(Boolean)) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (!Array.isArray(parsed.models)) continue;
-      const models = parsed.models
-        .filter((model) => model && model.visibility === "list" && model.slug)
-        .map((model) => ({
-          label: model.display_name || model.slug,
-          value: model.slug
-        }));
-      if (models.length) return models;
-    } catch {
-      /* try next candidate */
-    }
-  }
-  return null;
-}
-
 function codexDefaultPreset() {
   return { labelKey: "defaultCodex", value: "" };
 }
 
-function readCodexModelPresetsFromFile() {
+function codexPresetsFromCatalog(catalog) {
+  if (!Array.isArray(catalog) || !catalog.length) return null;
+  return catalog.map((model) => ({
+    label: model.displayName,
+    value: model.slug,
+    reasoningEfforts: model.reasoningEfforts,
+    defaultReasoningEffort: model.defaultReasoningEffort
+  }));
+}
+
+function readCodexModelCatalogFromFile(expectedVersion) {
   try {
-    const file = path.join(os.homedir(), ".codex", "models_cache.json");
+    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+    const file = path.join(codexHome, "models_cache.json");
     if (!fs.existsSync(file)) return null;
-    return parseCodexModelCatalog(fs.readFileSync(file, "utf8"));
+    const raw = fs.readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw);
+    const cachedVersion = normalizeCodexVersion(parsed.client_version);
+    if (expectedVersion && cachedVersion && !codexVersionsMatch(cachedVersion, expectedVersion)) {
+      return null;
+    }
+    return parseCodexModelCatalog(raw);
   } catch {
     return null;
   }
 }
 
-function setCodexModelPresetCache(command, presets) {
-  if (!presets || !presets.length) return null;
+function setCodexModelPresetCache(command, version, catalog) {
+  const presets = codexPresetsFromCatalog(catalog);
+  if (!presets) return null;
+  const previousSignature = (codexModelPresetCache.catalog || [])
+    .map((model) => model.slug)
+    .join(",");
+  const nextSignature = catalog.map((model) => model.slug).join(",");
   codexModelPresetCache = {
     command,
+    version,
     ts: Date.now(),
     presets: [codexDefaultPreset(), ...presets],
+    catalog,
     refreshing: false
   };
+  if (nextSignature !== previousSignature) {
+    console.info(`main: Codex model catalog (${version || "unknown"}): ${nextSignature}`);
+  }
   return codexModelPresetCache.presets;
 }
 
-function refreshCodexModelPresetsInBackground(command) {
+function refreshCodexModelPresetsInBackground(command, version) {
   if (!command || codexModelPresetCache.refreshing) return;
   codexModelPresetCache.refreshing = true;
   let stdout = "";
@@ -1355,7 +1395,7 @@ function refreshCodexModelPresetsInBackground(command) {
       } catch {
         /* ignore */
       }
-    }, 3500);
+    }, 8000);
     proc.stdout.on("data", (chunk) => {
       if (stdout.length < 8 * 1024 * 1024) stdout += chunk.toString("utf8");
     });
@@ -1363,7 +1403,7 @@ function refreshCodexModelPresetsInBackground(command) {
       clearTimeout(timer);
       codexModelPresetCache.refreshing = false;
       if (code !== 0 || killed) return;
-      setCodexModelPresetCache(command, parseCodexModelCatalog(stdout));
+      setCodexModelPresetCache(command, version, parseCodexModelCatalog(stdout));
     });
     proc.on("error", () => {
       clearTimeout(timer);
@@ -1376,21 +1416,28 @@ function refreshCodexModelPresetsInBackground(command) {
 
 function codexModelPresetsForMenu() {
   const availability = chat.getProviderAvailability({ refresh: false });
-  const command = availability.providers.codex?.command;
+  const provider = availability.providers.codex;
+  const command = provider?.command;
   if (!command) return null;
+  const version = normalizeCodexVersion(provider.version);
   const now = Date.now();
   if (
     codexModelPresetCache.command === command &&
+    codexModelPresetCache.version === version &&
     codexModelPresetCache.presets
   ) {
     if (now - codexModelPresetCache.ts > 5 * 60 * 1000) {
-      refreshCodexModelPresetsInBackground(command);
+      refreshCodexModelPresetsInBackground(command, version);
     }
     return codexModelPresetCache.presets;
   }
 
-  const filePresets = setCodexModelPresetCache(command, readCodexModelPresetsFromFile());
-  refreshCodexModelPresetsInBackground(command);
+  const filePresets = setCodexModelPresetCache(
+    command,
+    version,
+    readCodexModelCatalogFromFile(version)
+  );
+  refreshCodexModelPresetsInBackground(command, version);
   return filePresets || MODEL_PRESETS.codex;
 }
 
@@ -1415,7 +1462,50 @@ function modelPresetLabel(preset) {
   return preset.label || preset.value || "";
 }
 
+function configuredCodexValue(key) {
+  try {
+    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+    const config = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8");
+    return parseTopLevelTomlString(config, key);
+  } catch {
+    return "";
+  }
+}
 
+function configuredCodexModel() {
+  return configuredCodexValue("model");
+}
+
+function effectiveCodexModel(presets, selected = settings.get("codexModel")) {
+  return String(selected || "").trim() ||
+    configuredCodexModel() ||
+    presets.find((preset) => preset.value)?.value ||
+    "";
+}
+
+function reasoningEffortsForModel(presets, model) {
+  const preset = presets.find((item) => item.value === model);
+  return Array.isArray(preset?.reasoningEfforts) ? preset.reasoningEfforts : [];
+}
+
+function setModelPreset(provider, preset, presets) {
+  const key = modelSettingKey(provider);
+  const patch = { [key]: preset.value };
+  if (provider === "codex") {
+    const currentEffort = String(
+      settings.get("codexReasoningEffort") ||
+      configuredCodexValue("model_reasoning_effort") ||
+      ""
+    );
+    const targetModel = effectiveCodexModel(presets, preset.value);
+    const targetPreset = presets.find((item) => item.value === targetModel);
+    const compatible = compatibleReasoningEffort(targetPreset, currentEffort);
+    if (currentEffort && compatible !== currentEffort) {
+      patch.codexReasoningEffort = compatible;
+    }
+  }
+  settings.set(patch);
+}
 
 // A "Model" submenu for whichever backend is active. Returned as an array so it
 // can be spread into the menu (empty when no backend / presets are available).
@@ -1425,11 +1515,7 @@ function buildModelMenuItems() {
   const presets = provider && modelPresetsForProvider(provider);
   if (!presets) return [];
   const key = modelSettingKey(provider);
-  let current = String(settings.get(key) || "");
-  if (provider === "codex" && current && !presets.some((item) => item.value === current)) {
-    settings.set({ [key]: "" });
-    current = "";
-  }
+  const current = String(settings.get(key) || "");
   const visiblePresets = includeCurrentModelPreset(presets, current);
   const label = provider === "codex" ? mt("modelCodex") : mt("modelClaude");
   return [
@@ -1442,11 +1528,72 @@ function buildModelMenuItems() {
               label: modelPresetLabel(m),
               type: "radio",
               checked: current === m.value,
-              click: () => settings.set({ [key]: m.value })
+              click: () => setModelPreset(provider, m, presets)
             }
       ))
     }
   ];
+}
+
+function buildCodexReasoningMenuItems() {
+  const availability = chat.getProviderAvailability({ refresh: false });
+  if (availability.activeProvider !== "codex") return [];
+  const presets = codexModelPresetsForMenu();
+  if (!presets) return [];
+  const model = effectiveCodexModel(presets);
+  const supported = reasoningEffortsForModel(presets, model);
+  const current = String(settings.get("codexReasoningEffort") || "");
+  const configuredEffort = configuredCodexValue("model_reasoning_effort");
+  const visible = current && !supported.includes(current)
+    ? [...supported, current]
+    : supported;
+  return [{
+    label: mt("reasoningCodex"),
+    submenu: [
+      {
+        label: configuredEffort
+          ? mt("defaultReasoningValue", mt("reasoningLevel", configuredEffort))
+          : mt("defaultReasoning"),
+        type: "radio",
+        checked: !current,
+        click: () => settings.set({ codexReasoningEffort: "" })
+      },
+      ...visible.map((effort) => ({
+        label: mt("reasoningLevel", effort),
+        type: "radio",
+        checked: current === effort,
+        click: () => settings.set({ codexReasoningEffort: effort })
+      }))
+    ]
+  }];
+}
+
+function buildClaudeReasoningMenuItems() {
+  const availability = chat.getProviderAvailability({ refresh: false });
+  if (availability.activeProvider !== "claude") return [];
+  const supported = availability.providers.claude?.effortLevels || [];
+  if (!supported.length) return [];
+  const current = String(settings.get("claudeReasoningEffort") || "");
+  const visible = current && !supported.includes(current)
+    ? [...supported, current]
+    : supported;
+  return [{
+    label: mt("reasoningClaude"),
+    submenu: [
+      {
+        label: mt("defaultReasoning"),
+        type: "radio",
+        checked: !current,
+        click: () => settings.set({ claudeReasoningEffort: "" })
+      },
+      ...visible.map((effort) => ({
+        label: mt("reasoningLevel", effort),
+        type: "radio",
+        checked: current === effort,
+        click: () => settings.set({ claudeReasoningEffort: effort })
+      }))
+    ]
+  }];
 }
 
 function buildContextMenu() {
@@ -1572,6 +1719,8 @@ function buildContextMenu() {
     },
     buildUsageBackendMenuItem(),
     ...buildModelMenuItems(),
+    ...buildClaudeReasoningMenuItems(),
+    ...buildCodexReasoningMenuItems(),
     {
       label: mt("priestessSettings"),
       click: () => openPriestessSettings()
@@ -1897,6 +2046,9 @@ if (!gotSingleInstanceLock) {
   // and when we flip themeSource via the Appearance menu.
   nativeTheme.on("updated", syncPopoverBackground);
   chat.refreshProviderAvailability();
+  // Populate the dynamic Codex model/effort menus before the first right-click.
+  // The catalog process is asynchronous, so this does not stall the tray.
+  codexModelPresetsForMenu();
   conversationFile = path.join(app.getPath("userData"), "conversation.json");
   persona.ensureMemoryFile();
   persona.ensureConversationArchiveFile();

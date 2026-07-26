@@ -13,6 +13,12 @@ const skills = require("./skills");
 const priestessProvider = require("./priestess-provider");
 const { spawnCli, spawnCliSync } = require("./cli-spawn");
 const { buildCodexExecArgs, resolveResumeSessionId } = require("./chat-runtime");
+const { parseClaudeEffortLevels } = require("./claude-capabilities");
+const {
+  compatibleReasoningEffort,
+  findCatalogModel,
+  parseCodexModelCatalog
+} = require("./codex-model-catalog");
 
 const PROVIDERS = Object.freeze({
   CLAUDE: "claude",
@@ -78,8 +84,11 @@ let resumeRetryInFlight = false;
 let claudeModelInvalid = false;
 let claudeModelFallbackInFlight = false;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
-let codexModelCatalogCache = { command: null, ts: 0, values: null };
+let codexModelCatalogCache = { command: null, ts: 0, catalog: null };
 let lastInvalidCodexModelNotice = "";
+let lastInvalidCodexReasoningNotice = "";
+let lastInvalidClaudeReasoningNotice = "";
+let claudeEffortProbeCache = { command: null, version: "", levels: null };
 const codexSessionFileCache = new Map();
 
 // Hidden directive tags — she begins each reply with [[mood:X]] and may emit
@@ -441,6 +450,15 @@ function platformCodexBinDirs() {
   return ["linux-x64", "linux-arm64"];
 }
 
+function installedCodexAppCandidates() {
+  if (process.platform !== "darwin") return [];
+  const appNames = ["ChatGPT.app", "Codex.app"];
+  const roots = ["/Applications", path.join(os.homedir(), "Applications")];
+  return roots.flatMap((root) => appNames.map((appName) =>
+    path.join(root, appName, "Contents", "Resources", "codex")
+  ));
+}
+
 function discoverCodexCandidates() {
   const roots = [
     path.join(os.homedir(), ".vscode", "extensions"),
@@ -450,8 +468,10 @@ function discoverCodexCandidates() {
   const names = executableNames("codex");
   for (const root of roots) {
     try {
-      for (const entry of fs.readdirSync(root)) {
-        if (!entry.startsWith("openai.chatgpt-")) continue;
+      const entries = fs.readdirSync(root)
+        .filter((entry) => entry.startsWith("openai.chatgpt-"))
+        .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
+      for (const entry of entries) {
         for (const binDir of platformCodexBinDirs()) {
           for (const name of names) {
             candidates.push(path.join(root, entry, "bin", binDir, name));
@@ -462,7 +482,7 @@ function discoverCodexCandidates() {
       /* ignore missing editor extension directories */
     }
   }
-  return candidates;
+  return [...installedCodexAppCandidates(), ...candidates];
 }
 
 function executableCandidates(command) {
@@ -475,6 +495,12 @@ function executableCandidates(command) {
         ...names.map((name) => path.join(os.homedir(), ".claude", "local", name)),
         ...names.map((name) => path.join(os.homedir(), ".local", "bin", name))
       ];
+  // Respect the executable the user gets in their terminal first. A machine
+  // can retain many older VS Code extension bundles; choosing the first
+  // directory entry there made PRTS silently run an outdated Codex catalog.
+  if (command === PROVIDERS.CODEX) {
+    return unique([...pathCandidates, ...binCandidates, ...providerCandidates]);
+  }
   return unique([...providerCandidates, ...binCandidates, ...pathCandidates]);
 }
 
@@ -490,7 +516,7 @@ function canAccessExecutable(candidate) {
   }
 }
 
-function canSpawnExecutable(candidate) {
+function probeExecutable(candidate) {
   try {
     // The timeout is a ceiling, not a wait — a healthy CLI answers --version
     // in 50-400ms and we return immediately. 5s (formerly 1.8s on mac) only
@@ -499,26 +525,68 @@ function canSpawnExecutable(candidate) {
     // which regularly blew the old ceiling and made a working CLI look gone.
     const probe = spawnCliSync(candidate, ["--version"], {
       env: { ...process.env, CLAUDE_CODE_NONINTERACTIVE: "1" },
-      stdio: "ignore",
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: 5000
     });
-    return !probe.error && probe.status === 0;
+    return {
+      ok: !probe.error && probe.status === 0,
+      version: `${probe.stdout || ""}\n${probe.stderr || ""}`.trim()
+    };
   } catch {
-    return false;
+    return { ok: false, version: "" };
   }
+}
+
+function probeClaudeEffortLevels(command, version) {
+  if (
+    claudeEffortProbeCache.command === command &&
+    claudeEffortProbeCache.version === version &&
+    claudeEffortProbeCache.levels
+  ) {
+    return claudeEffortProbeCache.levels;
+  }
+  let levels = [];
+  try {
+    const result = spawnCliSync(command, ["--help"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5000,
+      maxBuffer: 1024 * 1024
+    });
+    if (!result.error && result.status === 0) {
+      levels = parseClaudeEffortLevels(`${result.stdout || ""}\n${result.stderr || ""}`);
+    }
+  } catch {
+    /* Older Claude CLIs simply keep the effort menu hidden. */
+  }
+  claudeEffortProbeCache = { command, version, levels };
+  return levels;
 }
 
 function detectProvider(provider, previous = null) {
   const normalized = normalizeProvider(provider);
   for (const candidate of executableCandidates(normalized)) {
     try {
-      if (canAccessExecutable(candidate) && canSpawnExecutable(candidate)) {
+      if (canAccessExecutable(candidate)) {
+        const probe = probeExecutable(candidate);
+        if (!probe.ok) continue;
+        if (previous?.command !== candidate || previous?.version !== probe.version) {
+          console.info(
+            `chat: detected ${providerShortLabel(normalized)} CLI at ${candidate}` +
+            (probe.version ? ` (${probe.version})` : "")
+          );
+        }
         return {
           provider: normalized,
           label: providerLabel(normalized),
           shortLabel: providerShortLabel(normalized),
           available: true,
-          command: candidate
+          command: candidate,
+          version: probe.version,
+          effortLevels: normalized === PROVIDERS.CLAUDE
+            ? probeClaudeEffortLevels(candidate, probe.version)
+            : []
         };
       }
     } catch {
@@ -538,7 +606,9 @@ function detectProvider(provider, previous = null) {
     label: providerLabel(normalized),
     shortLabel: providerShortLabel(normalized),
     available: false,
-    command: null
+    command: null,
+    version: "",
+    effortLevels: []
   };
 }
 
@@ -553,7 +623,9 @@ function detectPriestessProvider() {
     label: providerLabel(PROVIDERS.PRIESTESS),
     shortLabel: providerShortLabel(PROVIDERS.PRIESTESS),
     available,
-    command: null
+    command: null,
+    version: "",
+    effortLevels: []
   };
 }
 
@@ -580,7 +652,9 @@ function emptyProviderAvailability() {
     label: providerLabel(provider),
     shortLabel: providerShortLabel(provider),
     available: false,
-    command: null
+    command: null,
+    version: "",
+    effortLevels: []
   });
   return {
     [PROVIDERS.CLAUDE]: empty(PROVIDERS.CLAUDE),
@@ -682,34 +756,16 @@ function cleanupInvocation(invocation) {
   }
 }
 
-function parseCodexModelCatalog(stdout) {
-  const line = String(stdout || "")
-    .split(/\r?\n/)
-    .map((part) => part.trim())
-    .find((part) => part.startsWith("{") && part.includes("\"models\""));
-  if (!line) return null;
-  try {
-    const parsed = JSON.parse(line);
-    if (!Array.isArray(parsed.models)) return null;
-    const values = parsed.models
-      .filter((model) => model && model.visibility === "list" && model.slug)
-      .map((model) => String(model.slug));
-    return values.length ? new Set(values) : null;
-  } catch {
-    return null;
-  }
-}
-
 function loadCodexModelCatalog() {
   const command = resolveExecutable(PROVIDERS.CODEX);
   if (!command) return null;
   const now = Date.now();
   if (
     codexModelCatalogCache.command === command &&
-    codexModelCatalogCache.values &&
+    codexModelCatalogCache.catalog &&
     now - codexModelCatalogCache.ts < 5 * 60 * 1000
   ) {
-    return codexModelCatalogCache.values;
+    return codexModelCatalogCache.catalog;
   }
   try {
     const result = spawnCliSync(command, ["debug", "models"], {
@@ -718,10 +774,10 @@ function loadCodexModelCatalog() {
       timeout: 3000,
       maxBuffer: 8 * 1024 * 1024
     });
-    const values = result.status === 0 ? parseCodexModelCatalog(result.stdout) : null;
-    if (values) {
-      codexModelCatalogCache = { command, ts: now, values };
-      return values;
+    const catalog = result.status === 0 ? parseCodexModelCatalog(result.stdout) : null;
+    if (catalog?.length) {
+      codexModelCatalogCache = { command, ts: now, catalog };
+      return catalog;
     }
   } catch {
     /* If catalog probing fails, leave the user's CLI default alone. */
@@ -732,12 +788,50 @@ function loadCodexModelCatalog() {
 function validatedCodexModel() {
   const selected = String(settings.get("codexModel") || "").trim();
   if (!selected) return "";
-  const availableModels = loadCodexModelCatalog();
-  if (!availableModels || availableModels.has(selected)) return selected;
+  const catalog = loadCodexModelCatalog();
+  if (!catalog || findCatalogModel(catalog, selected)) return selected;
   settings.set({ codexModel: "" });
   if (lastInvalidCodexModelNotice !== selected) {
     lastInvalidCodexModelNotice = selected;
     pushSystem(`Codex model \`${selected}\` is not available for the current local Codex account; using the CLI default instead.`);
+  }
+  return "";
+}
+
+function validatedCodexReasoningEffort(model) {
+  const selected = String(settings.get("codexReasoningEffort") || "").trim();
+  if (!selected) return "";
+  // With CLI/config-selected models, Codex itself owns compatibility. When
+  // PRTS pins a model, the same live catalog can reject a stale effort before
+  // it becomes a failed request.
+  if (!model) return selected;
+  const catalogModel = findCatalogModel(loadCodexModelCatalog(), model);
+  const compatible = compatibleReasoningEffort(catalogModel, selected);
+  if (compatible === selected) return selected;
+  settings.set({ codexReasoningEffort: compatible });
+  const noticeKey = `${model}:${selected}`;
+  if (lastInvalidCodexReasoningNotice !== noticeKey) {
+    lastInvalidCodexReasoningNotice = noticeKey;
+    pushSystem(
+      `Codex reasoning effort \`${selected}\` is not supported by \`${model}\`; ` +
+      `using \`${compatible || "the CLI default"}\` instead.`
+    );
+  }
+  return compatible;
+}
+
+function validatedClaudeReasoningEffort() {
+  const selected = String(settings.get("claudeReasoningEffort") || "").trim();
+  if (!selected) return "";
+  const supported = ensureProviderAvailability()[PROVIDERS.CLAUDE]?.effortLevels || [];
+  if (supported.includes(selected)) return selected;
+  settings.set({ claudeReasoningEffort: "" });
+  if (lastInvalidClaudeReasoningNotice !== selected) {
+    lastInvalidClaudeReasoningNotice = selected;
+    pushSystem(
+      `Claude Code does not expose the selected \`${selected}\` effort level; ` +
+      "using its default instead."
+    );
   }
   return "";
 }
@@ -2174,6 +2268,10 @@ function buildClaudeInvocation(trimmed, vibeCodingMode, screenshotPath, sharedTr
   if (claudeModel) {
     args.push("--model", claudeModel);
   }
+  const claudeReasoningEffort = validatedClaudeReasoningEffort();
+  if (claudeReasoningEffort) {
+    args.push("--effort", claudeReasoningEffort);
+  }
 
   if (isAgent) {
     args.push("--dangerously-skip-permissions");
@@ -2239,11 +2337,13 @@ function buildCodexInvocation(trimmed, cwd, vibeCodingMode, screenshotPath, shar
   );
   const prompt = buildCodexPrompt(trimmed, mode, screenshotPath, sharedTranscript);
   const codexModel = validatedCodexModel();
+  const codexReasoningEffort = validatedCodexReasoningEffort(codexModel);
   const invocation = buildCodexExecArgs({
     cwd,
     mode,
     resumeSessionId,
     model: codexModel,
+    reasoningEffort: codexReasoningEffort,
     screenshotPath,
     attachmentArgs: codexAttachmentArgs(),
     memoryDir: persona.memoryDir()

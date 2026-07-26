@@ -121,10 +121,15 @@ No ordinary app window and no taskbar or Dock clutter. Just one tray icon.
 - Right-click the icon for a context menu: choose Claude Code or Codex as
   the usage backend, choose the active backend's model, choose chat working
   directory, reveal the data folder, or quit. Codex model choices come from
-  the current local account's visible catalog; if that cannot be read, only
-  the CLI default is shown. Claude has no such catalog command, so it offers a
-  curated set of currently-usable models; if a chosen one isn't available to the
-  account, it auto-falls-back to the default and retries.
+  the visible catalog reported by the actual selected local CLI; if that cannot
+  be read, only the CLI default is shown. Claude has no such catalog command,
+  so it offers a curated set of currently-usable models; if a chosen one isn't
+  available to the account, it auto-falls-back to the default and retries.
+- Both Claude and Codex have separate reasoning-effort menus. Claude choices
+  come from the selected local CLI's `--effort` capability, and Claude Code
+  automatically lowers unsupported levels for the active model. Codex only
+  shows levels declared by its current model catalog. "Default" keeps the
+  corresponding CLI/config setting.
 - Persona, memory, rolling long-conversation summary, recent chat transcript,
   working directory, and app settings are shared between backends. Claude Code
   and Codex keep separate resume session ids for their own CLIs.
@@ -361,7 +366,7 @@ Files stored there:
 
 | File | Purpose |
 | --- | --- |
-| `settings.json` | App settings: selected backend, chat working directory, agent mode, skills (music / search / open URL/app), waifu mode (toggle + interval/cooldown/quiet hours/daily cap), outfit, auto-screenshot setting, appearance (system / light / dark), and popover size. |
+| `settings.json` | App settings: selected backend, Claude/Codex models and reasoning effort, chat working directory, agent mode, skills (music / search / open URL/app), waifu mode (toggle + interval/cooldown/quiet hours/daily cap), outfit, auto-screenshot setting, appearance (system / light / dark), and popover size. |
 | `conversation.json` | Current visible chat session, per-backend resume session ids, and the long-memory dormant flag. |
 | `memory/MEMORY.md` | Curated long-term memory about the Doctor: preferences, projects, recurring topics, and facts worth remembering. Auto-tidied periodically once it grows large. |
 | `memory/CONVERSATION_SUMMARY.md` | Rolling bounded summary of older conversations. Used when long context needs to be recovered. |

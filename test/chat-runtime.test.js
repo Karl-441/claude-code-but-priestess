@@ -43,6 +43,7 @@ test("resumed Codex invocations put parent options before resume", () => {
     mode: "advisor",
     resumeSessionId: "00000000-0000-0000-0000-000000000000",
     model: "gpt-test",
+    reasoningEffort: "ultra",
     screenshotPath: "/tmp/screen.png",
     attachmentArgs: ["-i", "/tmp/photo.png"],
     memoryDir: "/memory"
@@ -53,6 +54,11 @@ test("resumed Codex invocations put parent options before resume", () => {
   assert.ok(invocation.args.indexOf("-C") < resumeIndex);
   assert.ok(invocation.args.indexOf("-s") < resumeIndex);
   assert.ok(invocation.args.indexOf("--model") < resumeIndex);
+  assert.ok(invocation.args.indexOf("-c") < resumeIndex);
+  assert.equal(
+    invocation.args[invocation.args.indexOf("-c") + 1],
+    'model_reasoning_effort="ultra"'
+  );
   assert.ok(invocation.args.indexOf("-i") > resumeIndex);
   assert.equal(invocation.args.includes("--add-dir"), false);
   assert.equal(invocation.resumed, true);

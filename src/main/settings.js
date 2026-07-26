@@ -1,6 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { app } = require("electron");
+const { isClaudeReasoningEffort } = require("./claude-capabilities");
+const { isReasoningEffort } = require("./codex-model-catalog");
 
 const DEFAULTS = Object.freeze({
   chatProvider: process.platform === "win32" ? "codex" : "claude",
@@ -8,6 +10,10 @@ const DEFAULTS = Object.freeze({
   // string = let the CLI / account pick its default.
   claudeModel: "",
   codexModel: "",
+  // Optional per-turn reasoning overrides. Empty keeps each CLI's own
+  // config/default; non-empty values are passed to the selected local CLI.
+  claudeReasoningEffort: "",
+  codexReasoningEffort: "",
   // Built-in "Priestess" backend — she speaks to an OpenAI-compatible server
   // directly (no local CLI needed). Defaults to a local LiteLLM proxy. The
   // API key and URL live ONLY in this local settings.json (userData); they
@@ -134,6 +140,8 @@ function get(key) {
 const VALIDATORS = {
   vibeCodingMode: (v) => ["companion", "advisor", "agent"].includes(v),
   chatProvider: (v) => ["claude", "codex", "priestess"].includes(v),
+  claudeReasoningEffort: isClaudeReasoningEffort,
+  codexReasoningEffort: isReasoningEffort,
   theme: (v) => ["system", "light", "dark"].includes(v),
   menuLanguage: (v) => ["system", "zh", "en"].includes(v),
   outfit: (v) => ["formal", "casual"].includes(v),
