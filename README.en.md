@@ -122,14 +122,19 @@ No ordinary app window and no taskbar or Dock clutter. Just one tray icon.
   the usage backend, choose the active backend's model, choose chat working
   directory, reveal the data folder, or quit. Codex model choices come from
   the visible catalog reported by the actual selected local CLI; if that cannot
-  be read, only the CLI default is shown. Claude has no such catalog command,
-  so it offers a curated set of currently-usable models; if a chosen one isn't
-  available to the account, it auto-falls-back to the default and retries.
+  be read, only the CLI default is shown. If Codex later rejects a selected
+  model at runtime, PRTS clears only that override, discards the incompatible
+  CLI session, and retries once with the CLI/config default. Claude has no such
+  catalog command, so it offers a curated set of currently-usable models; if a
+  chosen one isn't available to the account, it auto-falls-back to the default
+  and retries.
 - Both Claude and Codex have separate reasoning-effort menus. Claude choices
   come from the selected local CLI's `--effort` capability, and Claude Code
   automatically lowers unsupported levels for the active model. Codex only
   shows levels declared by its current model catalog. "Default" keeps the
-  corresponding CLI/config setting.
+  corresponding CLI/config setting. If the Codex CLI still rejects the chosen
+  effort, PRTS clears only the effort override and retries once with that
+  default.
 - Persona, memory, rolling long-conversation summary, recent chat transcript,
   working directory, and app settings are shared between backends. Claude Code
   and Codex keep separate resume session ids for their own CLIs.
