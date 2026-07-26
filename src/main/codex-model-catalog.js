@@ -1,3 +1,7 @@
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
 const REASONING_EFFORT_ORDER = Object.freeze([
   "none",
   "minimal",
@@ -128,13 +132,55 @@ function parseTopLevelTomlString(source, key) {
   return "";
 }
 
+function codexHomeDir() {
+  return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+}
+
+function readCodexConfigValue(key) {
+  try {
+    const config = fs.readFileSync(path.join(codexHomeDir(), "config.toml"), "utf8");
+    return parseTopLevelTomlString(config, key);
+  } catch {
+    return "";
+  }
+}
+
+// Which model Codex will actually run this turn. `certain` is false when
+// neither PRTS nor config.toml pins one: the CLI then falls back to its own
+// account default, and no local file reports that reliably. Callers must not
+// treat an uncertain model as authoritative.
+function resolveCodexModel(selected) {
+  const pinned = String(selected || "").trim();
+  if (pinned) return { model: pinned, certain: true };
+  const configured = readCodexConfigValue("model");
+  if (configured) return { model: configured, certain: true };
+  return { model: "", certain: false };
+}
+
+// Effort levels worth offering (and accepting) for a resolved model. Without a
+// known model no single entry's list applies, so widen to everything the
+// catalog advertises and leave the CLI as the final authority — better than
+// guessing a model and hiding levels the real one supports.
+function reasoningEffortsForModel(catalog, model, certain = true) {
+  const models = Array.isArray(catalog) ? catalog : [];
+  if (certain) {
+    const entry = findCatalogModel(models, model);
+    if (entry?.reasoningEfforts?.length) return entry.reasoningEfforts;
+  }
+  return normalizeReasoningEfforts(models.flatMap((entry) => entry.reasoningEfforts || []));
+}
+
 module.exports = {
   REASONING_EFFORT_ORDER,
+  codexHomeDir,
   codexVersionsMatch,
   compatibleReasoningEffort,
   findCatalogModel,
   isReasoningEffort,
   normalizeCodexVersion,
   parseCodexModelCatalog,
-  parseTopLevelTomlString
+  parseTopLevelTomlString,
+  readCodexConfigValue,
+  reasoningEffortsForModel,
+  resolveCodexModel
 };

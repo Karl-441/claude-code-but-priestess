@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const {
   codexVersionsMatch,
@@ -7,7 +10,10 @@ const {
   findCatalogModel,
   normalizeCodexVersion,
   parseCodexModelCatalog,
-  parseTopLevelTomlString
+  parseTopLevelTomlString,
+  readCodexConfigValue,
+  reasoningEffortsForModel,
+  resolveCodexModel
 } = require("../src/main/codex-model-catalog");
 
 const CATALOG = JSON.stringify({
@@ -80,4 +86,47 @@ test("unsupported reasoning effort falls back to the model default", () => {
   const model = findCatalogModel(catalog, "gpt-older");
   assert.equal(compatibleReasoningEffort(model, "ultra"), "medium");
   assert.equal(compatibleReasoningEffort(model, "high"), "high");
+});
+
+test("an unpinned model resolves through config.toml before giving up", (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "prts-codex-home-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const previousHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+  });
+
+  // Nothing pinned anywhere: the CLI picks from the account, so PRTS must
+  // report that it does not know which model will run.
+  assert.deepEqual(resolveCodexModel(""), { model: "", certain: false });
+  assert.deepEqual(resolveCodexModel("gpt-5.6-sol"), { model: "gpt-5.6-sol", certain: true });
+
+  fs.writeFileSync(path.join(home, "config.toml"), 'model = "gpt-older"\n', "utf8");
+  assert.equal(readCodexConfigValue("model"), "gpt-older");
+  assert.deepEqual(resolveCodexModel(""), { model: "gpt-older", certain: true });
+  // A PRTS pin still outranks config.toml.
+  assert.deepEqual(resolveCodexModel("gpt-5.6-sol"), { model: "gpt-5.6-sol", certain: true });
+});
+
+test("an unknown model offers every level the catalog advertises", () => {
+  const catalog = parseCodexModelCatalog(CATALOG);
+  // gpt-older tops out at high; gpt-5.6-sol goes to ultra. With no known
+  // model, hiding max/ultra would wrongly lock the user out of levels their
+  // actual model supports.
+  assert.deepEqual(
+    reasoningEffortsForModel(catalog, "", false),
+    ["low", "medium", "high", "max", "ultra"]
+  );
+  assert.deepEqual(
+    reasoningEffortsForModel(catalog, "gpt-older", true),
+    ["low", "medium", "high"]
+  );
+  // A pinned model missing from the catalog falls back to the same union
+  // rather than reporting no levels at all.
+  assert.deepEqual(
+    reasoningEffortsForModel(catalog, "gpt-unknown", true),
+    ["low", "medium", "high", "max", "ultra"]
+  );
 });

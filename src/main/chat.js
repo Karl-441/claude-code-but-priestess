@@ -17,7 +17,9 @@ const { parseClaudeEffortLevels } = require("./claude-capabilities");
 const {
   compatibleReasoningEffort,
   findCatalogModel,
-  parseCodexModelCatalog
+  parseCodexModelCatalog,
+  reasoningEffortsForModel,
+  resolveCodexModel
 } = require("./codex-model-catalog");
 
 const PROVIDERS = Object.freeze({
@@ -798,15 +800,33 @@ function validatedCodexModel() {
   return "";
 }
 
-function validatedCodexReasoningEffort(model) {
+// Call after validatedCodexModel(), which clears a stale pin this then re-reads.
+function validatedCodexReasoningEffort() {
   const selected = String(settings.get("codexReasoningEffort") || "").trim();
   if (!selected) return "";
-  // With CLI/config-selected models, Codex itself owns compatibility. When
-  // PRTS pins a model, the same live catalog can reject a stale effort before
-  // it becomes a failed request.
-  if (!model) return selected;
-  const catalogModel = findCatalogModel(loadCodexModelCatalog(), model);
-  const compatible = compatibleReasoningEffort(catalogModel, selected);
+  const catalog = loadCodexModelCatalog();
+  if (!catalog) return selected; // No catalog — the CLI is the only authority.
+
+  const { model, certain } = resolveCodexModel(settings.get("codexModel"));
+  if (!certain) {
+    // Codex picks the model from the account default, which nothing local
+    // reports. Guessing one and downgrading from that guess would silently
+    // overwrite a valid choice, so only reject a level that no visible model
+    // offers — those are stale for certain.
+    const advertised = reasoningEffortsForModel(catalog, "", false);
+    if (!advertised.length || advertised.includes(selected)) return selected;
+    settings.set({ codexReasoningEffort: "" });
+    if (lastInvalidCodexReasoningNotice !== selected) {
+      lastInvalidCodexReasoningNotice = selected;
+      pushSystem(
+        `No Codex model in the current catalog supports reasoning effort ` +
+        `\`${selected}\`; using the CLI default instead.`
+      );
+    }
+    return "";
+  }
+
+  const compatible = compatibleReasoningEffort(findCatalogModel(catalog, model), selected);
   if (compatible === selected) return selected;
   settings.set({ codexReasoningEffort: compatible });
   const noticeKey = `${model}:${selected}`;
@@ -2337,7 +2357,7 @@ function buildCodexInvocation(trimmed, cwd, vibeCodingMode, screenshotPath, shar
   );
   const prompt = buildCodexPrompt(trimmed, mode, screenshotPath, sharedTranscript);
   const codexModel = validatedCodexModel();
-  const codexReasoningEffort = validatedCodexReasoningEffort(codexModel);
+  const codexReasoningEffort = validatedCodexReasoningEffort();
   const invocation = buildCodexExecArgs({
     cwd,
     mode,

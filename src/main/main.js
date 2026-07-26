@@ -26,9 +26,12 @@ const { spawnCli } = require("./cli-spawn");
 const {
   codexVersionsMatch,
   compatibleReasoningEffort,
+  findCatalogModel,
   normalizeCodexVersion,
   parseCodexModelCatalog,
-  parseTopLevelTomlString
+  readCodexConfigValue,
+  reasoningEffortsForModel,
+  resolveCodexModel
 } = require("./codex-model-catalog");
 const wsServer = require("./ws-server");
 
@@ -1462,30 +1465,10 @@ function modelPresetLabel(preset) {
   return preset.label || preset.value || "";
 }
 
-function configuredCodexValue(key) {
-  try {
-    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-    const config = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8");
-    return parseTopLevelTomlString(config, key);
-  } catch {
-    return "";
-  }
-}
-
-function configuredCodexModel() {
-  return configuredCodexValue("model");
-}
-
-function effectiveCodexModel(presets, selected = settings.get("codexModel")) {
-  return String(selected || "").trim() ||
-    configuredCodexModel() ||
-    presets.find((preset) => preset.value)?.value ||
-    "";
-}
-
-function reasoningEffortsForModel(presets, model) {
-  const preset = presets.find((item) => item.value === model);
-  return Array.isArray(preset?.reasoningEfforts) ? preset.reasoningEfforts : [];
+// The catalog behind the menu presets, or null when only the static fallback
+// list is available. Call codexModelPresetsForMenu() first to warm the cache.
+function codexCatalogForMenu() {
+  return codexModelPresetCache.catalog;
 }
 
 function setModelPreset(provider, preset, presets) {
@@ -1494,14 +1477,16 @@ function setModelPreset(provider, preset, presets) {
   if (provider === "codex") {
     const currentEffort = String(
       settings.get("codexReasoningEffort") ||
-      configuredCodexValue("model_reasoning_effort") ||
+      readCodexConfigValue("model_reasoning_effort") ||
       ""
     );
-    const targetModel = effectiveCodexModel(presets, preset.value);
-    const targetPreset = presets.find((item) => item.value === targetModel);
-    const compatible = compatibleReasoningEffort(targetPreset, currentEffort);
-    if (currentEffort && compatible !== currentEffort) {
-      patch.codexReasoningEffort = compatible;
+    // Switching to a model that cannot do the current effort would otherwise
+    // leave a stale level behind for the next turn to reject.
+    const { model, certain } = resolveCodexModel(preset.value);
+    if (currentEffort && certain) {
+      const catalogModel = findCatalogModel(codexCatalogForMenu(), model);
+      const compatible = compatibleReasoningEffort(catalogModel, currentEffort);
+      if (compatible !== currentEffort) patch.codexReasoningEffort = compatible;
     }
   }
   settings.set(patch);
@@ -1540,10 +1525,11 @@ function buildCodexReasoningMenuItems() {
   if (availability.activeProvider !== "codex") return [];
   const presets = codexModelPresetsForMenu();
   if (!presets) return [];
-  const model = effectiveCodexModel(presets);
-  const supported = reasoningEffortsForModel(presets, model);
+  const { model, certain } = resolveCodexModel(settings.get("codexModel"));
+  const supported = reasoningEffortsForModel(codexCatalogForMenu(), model, certain);
   const current = String(settings.get("codexReasoningEffort") || "");
-  const configuredEffort = configuredCodexValue("model_reasoning_effort");
+  if (!supported.length && !current) return [];
+  const configuredEffort = readCodexConfigValue("model_reasoning_effort");
   const visible = current && !supported.includes(current)
     ? [...supported, current]
     : supported;
