@@ -202,7 +202,7 @@
         "prts.advisorFileBlacklist": {
           "type": "string",
           "default": ".env\n.env.*\n*secret*\n*credential*\n*.pem\n*.key\nid_rsa*\n*password*\n*token*",
-          "description": "Advisor mode file blacklist — gitignore-style, one pattern per line. Priestess will not read files matching any of these patterns."
+          "description": "Prompt the model to avoid reading files matching these patterns (gitignore-style, one per line). This is a model-prompt constraint, not a filesystem security guarantee."
         }
       }
     }

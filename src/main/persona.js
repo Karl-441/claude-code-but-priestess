@@ -536,15 +536,22 @@ function buildPersonaPrompt({
         "- 你可以搜索项目中的相关代码、查看目录结构，帮助你更准确地分析。\n" +
         "- 给出修改方案时，把具体的代码改动写清楚，让博士自己动手改。\n" +
         "- 不要因为无法直接修改而感到抱歉——你的价值在于分析与判断，不是替博士按键。\n";
-      // Inject file blacklist if configured (gitignore-style, one pattern per line).
+      // Inject file blacklist if configured — resolved to absolute paths for enforcement.
+      const { parseBlacklist, findBlacklistedFiles } = require("./file-blacklist");
       const rawBlacklist = settings.get("advisorFileBlacklist");
-      const patterns = typeof rawBlacklist === "string"
-        ? rawBlacklist.split("\n").map((s) => s.trim()).filter((s) => s && !s.startsWith("#"))
-        : Array.isArray(rawBlacklist) ? rawBlacklist : [];
+      const patterns = parseBlacklist(rawBlacklist);
       if (patterns.length) {
-        prompt +=
-          "- 以下文件/目录请不要读取（博士的偏好，格式与 .gitignore 相同，请尽量遵守）：\n" +
-          patterns.map((p) => `  · ${p}`).join("\n") + "\n";
+        // Resolve patterns to concrete absolute paths in the current workspace.
+        const blacklistedPaths = findBlacklistedFiles(workspacePath || settings.get("chatCwd") || "", patterns);
+        if (blacklistedPaths.length) {
+          prompt +=
+            "- 以下文件/目录严禁读取（系统已扫描工作区，这些是匹配黑名单的真实路径。请像尊重系统规则一样尊重这份清单）：\n" +
+            blacklistedPaths.map((p) => `  · ${p}`).join("\n") + "\n";
+        } else if (patterns.length) {
+          prompt +=
+            "- 以下模式匹配的文件/目录请不要读取：\n" +
+            patterns.map((p) => `  · ${p}`).join("\n") + "\n";
+        }
       }
       prompt += "\n";
     } else {

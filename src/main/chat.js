@@ -21,6 +21,7 @@ const {
   reasoningEffortsForModel,
   resolveCodexModel
 } = require("./codex-model-catalog");
+const { parseBlacklist, findBlacklistedFiles, isBlacklisted } = require("./file-blacklist");
 
 const PROVIDERS = Object.freeze({
   CLAUDE: "claude",

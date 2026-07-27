@@ -107,7 +107,8 @@ function proactiveLevel() {
 
 function shouldRunDiagnosticCheck(now) {
   if (!getWsServer().isVscodeActive()) return false;
-  if (proactiveLevel() === "silent") return false; // companion mode
+  if (proactiveLevel() === "silent") return false;
+  if (settings.get("vibeCodingDiagnostics") !== true) return false; // explicit user opt-in
   if (now - lastDiagnosticAttemptAt < diagnosticCooldownMs()) return false;
   if (chat.isBusy()) return false;
   if (inQuietHours()) return false;

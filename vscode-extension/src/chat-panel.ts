@@ -406,20 +406,25 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   }
 
   private applyFix(filePath: string, newCode: string, lineStart: number) {
-    // Validate: file must exist and be within the workspace.
     const uri = vscode.Uri.file(filePath);
     try {
       if (!fs.existsSync(uri.fsPath)) {
         vscode.window.showErrorMessage("PRTS: File not found: " + filePath);
         return;
       }
-      // Write suggestion to a temp file (in OS temp dir, cleaned up on exit).
+      // Safety: only allow files within an open workspace folder.
+      const folders = vscode.workspace.workspaceFolders;
+      const resolved = path.resolve(uri.fsPath);
+      const inWorkspace = folders?.some((f) => resolved.startsWith(f.uri.fsPath + path.sep));
+      if (!inWorkspace) {
+        vscode.window.showErrorMessage("PRTS: File is outside the workspace: " + filePath);
+        return;
+      }
       const os = require("os");
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prts-suggestion-"));
       const tmpFile = path.join(tmpDir, path.basename(filePath));
       fs.writeFileSync(tmpFile, newCode, "utf8");
       const tmpUri = vscode.Uri.file(tmpFile);
-      // Open diff: original (left, read-only) vs. suggestion (right, editable).
       vscode.commands.executeCommand("vscode.diff", uri, tmpUri,
         `PRTS Suggestion — ${path.basename(filePath)}`);
     } catch (err) {

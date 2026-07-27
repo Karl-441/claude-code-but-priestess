@@ -481,8 +481,15 @@ function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
     return;
   }
 
-  // Inject editor context into the user message so the CLI sees it
-  const messageWithContext = buildContextAugmentedMessage(trimmed, context);
+  // Inject editor context into the user message so the CLI sees it.
+  // Filter out blacklisted files: if the active file matches the blacklist,
+  // strip all context so she doesn't even know the file exists.
+  const { parseBlacklist, isBlacklisted } = require("./file-blacklist");
+  const blPatterns = parseBlacklist(settings.get("advisorFileBlacklist"));
+  const filteredContext = (blPatterns.length && context?.activeFile && isBlacklisted(context.activeFile, blPatterns))
+    ? null
+    : context;
+  const messageWithContext = buildContextAugmentedMessage(trimmed, filteredContext);
 
   const currentUserEntry = userAlreadyShown
     ? latestMatchingUser(trimmed)
@@ -589,7 +596,7 @@ function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
       vscodeSessionIds[provider] = null;
       if (currentAssistantId) discardAssistant();
       saveConversation();
-      dispatchSend(trimmed, context);
+      dispatchSend(trimmed, context, { userAlreadyShown: true });
       return;
     }
 
@@ -730,14 +737,17 @@ function hasPreviousConversation() {
 }
 
 // Lightweight inline completion — spawns a one-shot CLI subprocess per request.
-// Does NOT touch history, archive, or any shared turn state.
+// Uses chat.getProviderAvailability() for resolved paths and cli-spawn.js for
+// cross-platform spawning. Does NOT touch history, archive, or any shared turn state.
 const COMPLETION_TIMEOUT_MS = 4000;
-const COMPLETION_MAX_TOKENS = 64;
 
 async function complete(prefix, file, language) {
-  if (midTurn) return null; // don't compete with an active turn
-  const provider = chat.getProviderAvailability().activeProvider || "claude";
-  if (provider === "priestess") return null; // built-in backend not supported
+  if (midTurn) return null;
+  const availability = chat.getProviderAvailability({ refresh: false });
+  const provider = availability.activeProvider;
+  if (!provider || provider === "priestess") return null;
+  const info = availability.providers[provider];
+  if (!info?.available || !info.command) return null;
 
   const prompt =
     `Complete this code. Only output the completion text, no markdown, no explanation.\n` +
@@ -745,44 +755,47 @@ async function complete(prefix, file, language) {
     prefix;
 
   return new Promise((resolve) => {
-    const { execFile } = require("child_process");
-    let command, args;
-
+    let args;
+    const cwd = settings.get("chatCwd") || "";
     if (provider === "codex") {
-      command = "codex";
-      args = ["exec", "-p", prompt, "--max-tokens", String(COMPLETION_MAX_TOKENS), "--json"];
+      args = ["exec", "-p", prompt, "--json"];
     } else {
-      // Claude: -p for single-turn, --output-format text for raw text response
-      command = "claude";
-      args = ["-p", prompt, "--output-format", "text", "--max-tokens", String(COMPLETION_MAX_TOKENS)];
+      // Claude: -p for single-turn, --output-format text (no --max-tokens flag exists)
+      args = ["-p", prompt, "--output-format", "text"];
       const claudeModel = String(settings.get("claudeModel") || "").trim();
       if (claudeModel) args.push("--model", claudeModel);
     }
 
-    const child = execFile(command, args, {
-      timeout: COMPLETION_TIMEOUT_MS,
-      maxBuffer: 16 * 1024,
-      encoding: "utf8",
-    }, (err, stdout) => {
-      if (err) {
-        if (err.killed) return resolve(null); // timeout
-        return resolve(null);
-      }
+    const proc = spawnCli(info.command, args, {
+      cwd: cwd || undefined,
+      env: { ...process.env },
+    });
+
+    let stdout = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { proc.kill(); } catch (_) {}
+      resolve(null);
+    }, COMPLETION_TIMEOUT_MS);
+    timer.unref();
+
+    proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+    proc.on("close", () => {
+      clearTimeout(timer);
+      if (timedOut) return;
       const text = (stdout || "").trim();
-      // Filter out common prefixes the model sometimes emits despite instructions
       const cleaned = text
         .replace(/^```[\w]*\n?/i, "")
         .replace(/\n?```$/i, "")
         .trim();
-      // Only return if it looks like a real completion (not an apology/explanation)
       if (cleaned && cleaned.length < 2000 && !/^(I|here|sure|certainly|this is)/i.test(cleaned)) {
         resolve(cleaned);
       } else {
         resolve(null);
       }
     });
-
-    child.on("error", () => resolve(null));
+    proc.on("error", () => { clearTimeout(timer); resolve(null); });
   });
 }
 
