@@ -2799,6 +2799,7 @@ async function launchProviderTurn({
       resumeRetryInFlight = true;
       claudeResultErrored = false;
       const retrySilentKind = silentTurnKind;
+      const retryAttachments = pendingAttachments;
       if (pendingAssistantId) finalizeAssistant("", { suppressProactiveNotify: true });
       cleanupInvocation(invocation);
       currentProcess = null;
@@ -2807,7 +2808,8 @@ async function launchProviderTurn({
       setImmediate(() => dispatchSend(trimmed, {
         userAlreadyShown: true,
         chained: true,
-        silentUser: Boolean(retrySilentKind)
+        silentUser: Boolean(retrySilentKind),
+        resolvedAttachments: retryAttachments
       }));
       return;
     }
@@ -2826,7 +2828,8 @@ async function launchProviderTurn({
       claudeModelFallbackInFlight = true;
       claudeModelInvalid = false;
       const retrySilentKind = silentTurnKind;
-      if (pendingAssistantId) finalizeAssistant("");
+      const retryAttachments = pendingAttachments;
+      if (pendingAssistantId) finalizeAssistant("", { suppressProactiveNotify: true });
       pushSystem(`Claude 模型 \`${badClaudeModel}\` 当前账号不可用，已切回默认并重试。`);
       cleanupInvocation(invocation);
       currentProcess = null;
@@ -2835,7 +2838,8 @@ async function launchProviderTurn({
       setImmediate(() => dispatchSend(trimmed, {
         userAlreadyShown: true,
         chained: true,
-        silentUser: Boolean(retrySilentKind)
+        silentUser: Boolean(retrySilentKind),
+        resolvedAttachments: retryAttachments
       }));
       return;
     }
