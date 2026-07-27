@@ -2,10 +2,25 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
+  attachmentTempName,
   buildCodexExecArgs,
   normalizeCwd,
   resolveResumeSessionId
 } = require("../src/main/chat-runtime");
+
+test("downscaled attachments from different folders keep distinct names", () => {
+  // Same basename, different folders: without the index the second write lands
+  // on the first file and the backend sees one picture twice.
+  assert.notEqual(
+    attachmentTempName("/a/shot.png", 0),
+    attachmentTempName("/b/shot.png", 1)
+  );
+  assert.equal(attachmentTempName("/a/shot.png", 0), "00-shot.png");
+  assert.equal(attachmentTempName("/b/shot.jpeg", 1), "01-shot.png");
+  assert.equal(attachmentTempName("C:\\pics\\shot.PNG", 2), "02-shot.png");
+  // Ordering stays lexicographic past nine so temp listings read in turn order.
+  assert.ok(attachmentTempName("/a/x.png", 9) < attachmentTempName("/a/x.png", 10));
+});
 
 test("session plans can force a fresh main-window session", () => {
   assert.equal(

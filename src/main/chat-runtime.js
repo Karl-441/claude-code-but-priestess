@@ -72,7 +72,17 @@ function buildCodexExecArgs({
   return { args, cwd: effectiveCwd, resumed: Boolean(resumeSessionId) };
 }
 
+// Downscaled copies of one turn's images share a directory, so naming them
+// after the original alone lets two attachments picked from different folders
+// collide — the second write silently replaces the first and the backend is
+// handed the same picture twice. The position in the turn disambiguates them.
+function attachmentTempName(originalPath, index) {
+  const base = String(originalPath || "").split(/[\\/]/).pop() || "image";
+  return `${String(index).padStart(2, "0")}-${base.replace(/\.[^.]+$/, "")}.png`;
+}
+
 module.exports = {
+  attachmentTempName,
   buildCodexExecArgs,
   normalizeCwd,
   resolveResumeSessionId

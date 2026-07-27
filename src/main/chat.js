@@ -12,7 +12,11 @@ const persona = require("./persona");
 const skills = require("./skills");
 const priestessProvider = require("./priestess-provider");
 const { spawnCli, spawnCliSync } = require("./cli-spawn");
-const { buildCodexExecArgs, resolveResumeSessionId } = require("./chat-runtime");
+const {
+  attachmentTempName,
+  buildCodexExecArgs,
+  resolveResumeSessionId
+} = require("./chat-runtime");
 const { parseClaudeEffortLevels } = require("./claude-capabilities");
 const {
   compatibleReasoningEffort,
@@ -22,6 +26,11 @@ const {
   resolveCodexModel
 } = require("./codex-model-catalog");
 const { parseBlacklist, findBlacklistedFiles, isBlacklisted } = require("./file-blacklist");
+const {
+  classifyCodexRejection,
+  codexEventErrorText,
+  isCodexModelMetadataWarning
+} = require("./codex-errors");
 
 const PROVIDERS = Object.freeze({
   CLAUDE: "claude",
@@ -86,6 +95,10 @@ let resumeRetryInFlight = false;
 // the CLI default and retry once. `claudeModelFallbackInFlight` guards the loop.
 let claudeModelInvalid = false;
 let claudeModelFallbackInFlight = false;
+let codexModelFallbackInFlight = false;
+let codexReasoningFallbackInFlight = false;
+let codexErrorText = "";
+let codexErrorSurfaced = false;
 const MAX_TOOL_OUTPUT_CHARS = 4000;
 let codexModelCatalogCache = { command: null, ts: 0, catalog: null };
 let lastInvalidCodexModelNotice = "";
@@ -262,7 +275,7 @@ function resolveAttachmentsForBackend(paths) {
   if (!paths.some(isImagePath)) return paths;
   let dir = null;
   let img = null;
-  return paths.map((p) => {
+  return paths.map((p, index) => {
     if (!isImagePath(p)) return p;
     try {
       const { nativeImage } = require("electron");
@@ -279,7 +292,7 @@ function resolveAttachmentsForBackend(paths) {
         fs.rmSync(dir, { recursive: true, force: true });
         fs.mkdirSync(dir, { recursive: true });
       }
-      const out = path.join(dir, path.basename(p).replace(/\.[^.]+$/, "") + ".png");
+      const out = path.join(dir, attachmentTempName(p, index));
       fs.writeFileSync(out, resized.toPNG());
       return out;
     } catch {
@@ -1600,6 +1613,8 @@ function beginAssistant(provider = currentProvider || activeProvider()) {
   resetDirectiveParsing();
   claudeResultErrored = false;
   claudeModelInvalid = false;
+  codexErrorText = "";
+  codexErrorSurfaced = false;
   turnSawToolUse = false;
   assistantTextAfterLastAction = false;
   unparsedLinesThisTurn = 0;
@@ -2048,6 +2063,16 @@ function codexSessionIdFromEvent(event) {
   );
 }
 
+function rememberCodexError(text) {
+  const message = String(text || "").trim();
+  if (!message) return;
+  if (!codexErrorText) {
+    codexErrorText = message.slice(0, 4000);
+  } else if (!codexErrorText.includes(message)) {
+    codexErrorText = `${codexErrorText}\n${message}`.slice(-4000);
+  }
+}
+
 function handleCodexStreamEvent(event) {
   if (!event || typeof event !== "object") return;
 
@@ -2056,14 +2081,31 @@ function handleCodexStreamEvent(event) {
     rememberProviderSession(PROVIDERS.CODEX, codexSessionIdFromEvent(event));
   }
 
-  if (type.includes("error")) {
-    const errorText = extractCodexText(event) || event.message || event.error;
-    if (errorText) pushSystem(`Codex reported an error: ${String(errorText).slice(0, 400)}`);
+  const item = event.item || event.event?.item || null;
+  const itemType = item?.type || event.kind || "";
+  const eventErrorText = codexEventErrorText(event);
+  const isErrorEvent =
+    Boolean(eventErrorText) ||
+    type.includes("error") ||
+    type.endsWith(".failed") ||
+    String(itemType).includes("error");
+  if (isErrorEvent) {
+    const errorText =
+      eventErrorText ||
+      extractCodexText(event) ||
+      (typeof event.message === "string" ? event.message : "") ||
+      (typeof event.error === "string" ? event.error : "");
+    if (!errorText) return;
+    const rejection = classifyCodexRejection(errorText);
+    if (isCodexModelMetadataWarning(errorText) && !rejection) return;
+    rememberCodexError(errorText);
+    if (!rejection) {
+      pushSystem(`Codex reported an error: ${String(errorText).slice(0, 400)}`);
+      codexErrorSurfaced = true;
+    }
     return;
   }
 
-  const item = event.item || event.event?.item || null;
-  const itemType = item?.type || event.kind || "";
   const toolName =
     event.name ||
     event.tool_name ||
@@ -2443,7 +2485,7 @@ function send(text, attachments) {
 
 function dispatchSend(
   trimmed,
-  { userAlreadyShown = false, chained = false, forceScreenshot = false, silentUser = false, vibeCodingMode: vibeCodingModeOverride = null, attachments = [] } = {}
+  { userAlreadyShown = false, chained = false, forceScreenshot = false, silentUser = false, vibeCodingMode: vibeCodingModeOverride = null, attachments = [], resolvedAttachments = null } = {}
 ) {
   if (currentProcess || turnLaunching) return { ok: false, reason: "busy" };
   if (quitPending) return { ok: false, reason: "quitting" };
@@ -2458,14 +2500,23 @@ function dispatchSend(
   // Attachments belong only to this real turn; silent self-turns never carry any.
   // Backend copies get downscaled (faster/cheaper vision); the bubble keeps the
   // full original, which was attached to the history entry above.
+  //
+  // A retry replays a turn whose images were downscaled already, and hands them
+  // back through `resolvedAttachments`. Re-resolving them would be worse than
+  // wasteful: the resolver wipes its temp directory the moment it has anything
+  // to downscale, which would delete the very files being replayed.
   pendingAttachments = silentTurnKind
     ? []
-    : resolveAttachmentsForBackend(Array.isArray(attachments) ? attachments : []);
+    : Array.isArray(resolvedAttachments)
+      ? resolvedAttachments
+      : resolveAttachmentsForBackend(Array.isArray(attachments) ? attachments : []);
 
   // A genuine new user turn — reset the Codex auto-continue guard.
   if (!chained) {
     codexAutoContinued = false;
     codexContinuationPending = false;
+    codexModelFallbackInFlight = false;
+    codexReasoningFallbackInFlight = false;
   }
 
   let currentUserEntry = null;
@@ -2719,6 +2770,10 @@ async function launchProviderTurn({
     );
     finalizeAssistant("");
     currentProvider = null;
+    codexModelFallbackInFlight = false;
+    codexReasoningFallbackInFlight = false;
+    codexErrorText = "";
+    codexErrorSurfaced = false;
     finishTurn({ error: error.message });
     return;
   }
@@ -2762,6 +2817,10 @@ async function launchProviderTurn({
     currentProvider = null;
     claudeResultErrored = false;
     resumeRetryInFlight = false;
+    codexModelFallbackInFlight = false;
+    codexReasoningFallbackInFlight = false;
+    codexErrorText = "";
+    codexErrorSurfaced = false;
     const cancelled = cancelRequested;
     cancelRequested = false;
     finishTurn({
@@ -2783,6 +2842,10 @@ async function launchProviderTurn({
     }
 
     const stderrText = stderrBuffer.trim();
+    const codexRejection =
+      provider === PROVIDERS.CODEX
+        ? classifyCodexRejection(`${codexErrorText}\n${stderrText}`)
+        : "";
     const cancelled = cancelRequested;
     cancelRequested = false;
 
@@ -2844,6 +2907,73 @@ async function launchProviderTurn({
       return;
     }
 
+    // The live catalog is the primary source, but the CLI remains the final
+    // authority. If it rejects the selected effort, clear only that override,
+    // discard the now-invalid session, and replay the turn once.
+    const badCodexReasoning = String(settings.get("codexReasoningEffort") || "").trim();
+    if (
+      provider === PROVIDERS.CODEX &&
+      !cancelled &&
+      !codexReasoningFallbackInFlight &&
+      codexRejection === "reasoning" &&
+      badCodexReasoning
+    ) {
+      settings.set({ codexReasoningEffort: "" });
+      sessionIds[PROVIDERS.CODEX] = null;
+      codexReasoningFallbackInFlight = true;
+      const retrySilentKind = silentTurnKind;
+      // Read now, not inside the callback: pendingAttachments is module state
+      // that the next turn overwrites, so a deferred read can replay the wrong
+      // images — or none.
+      const retryAttachments = pendingAttachments;
+      if (pendingAssistantId) finalizeAssistant("");
+      pushSystem(`Codex 推理强度 \`${badCodexReasoning}\` 不可用，已恢复默认并重试。`);
+      cleanupInvocation(invocation);
+      currentProcess = null;
+      currentProvider = null;
+      silentTurnKind = retrySilentKind;
+      setImmediate(() => dispatchSend(trimmed, {
+        userAlreadyShown: true,
+        chained: true,
+        silentUser: Boolean(retrySilentKind),
+        resolvedAttachments: retryAttachments
+      }));
+      return;
+    }
+
+    // Apply the same bounded recovery to a rejected model. Reasoning is checked
+    // first so an effort error never clears the independent model preference.
+    const badCodexModel = String(settings.get("codexModel") || "").trim();
+    if (
+      provider === PROVIDERS.CODEX &&
+      !cancelled &&
+      !codexModelFallbackInFlight &&
+      codexRejection === "model" &&
+      badCodexModel
+    ) {
+      settings.set({ codexModel: "" });
+      sessionIds[PROVIDERS.CODEX] = null;
+      codexModelFallbackInFlight = true;
+      const retrySilentKind = silentTurnKind;
+      // Read now, not inside the callback: pendingAttachments is module state
+      // that the next turn overwrites, so a deferred read can replay the wrong
+      // images — or none.
+      const retryAttachments = pendingAttachments;
+      if (pendingAssistantId) finalizeAssistant("");
+      pushSystem(`Codex 模型 \`${badCodexModel}\` 不可用，已恢复默认并重试。`);
+      cleanupInvocation(invocation);
+      currentProcess = null;
+      currentProvider = null;
+      silentTurnKind = retrySilentKind;
+      setImmediate(() => dispatchSend(trimmed, {
+        userAlreadyShown: true,
+        chained: true,
+        silentUser: Boolean(retrySilentKind),
+        resolvedAttachments: retryAttachments
+      }));
+      return;
+    }
+
     // Codex used a tool but never answered — auto-continue once (silently, with
     // a fresh screenshot) so she gives a real reply instead of going quiet.
     if (codexContinuationPending && !cancelled) {
@@ -2866,10 +2996,14 @@ async function launchProviderTurn({
     }
 
     if (code !== 0 && code !== null) {
-      const stderrSummary = stderrText.slice(-400);
+      const stderrSummary =
+        (stderrText || (provider === PROVIDERS.CODEX && !codexErrorSurfaced ? codexErrorText : ""))
+          .slice(-400);
       pushSystem(
         `\`${providerLabel(provider)}\` exited with code ${code}.${stderrSummary ? "\n" + stderrSummary : ""}`
       );
+    } else if (provider === PROVIDERS.CODEX && codexErrorText && !codexErrorSurfaced) {
+      pushSystem(`Codex reported an error: ${codexErrorText.slice(0, 400)}`);
     } else if (claudeResultErrored) {
       pushSystem(
         "Claude 返回了一个空的错误回复。请再试一次，或确认 `claude` CLI 已登录且额度未用尽。"
@@ -2884,6 +3018,10 @@ async function launchProviderTurn({
     resumeRetryInFlight = false;
     claudeModelFallbackInFlight = false;
     claudeModelInvalid = false;
+    codexModelFallbackInFlight = false;
+    codexReasoningFallbackInFlight = false;
+    codexErrorText = "";
+    codexErrorSurfaced = false;
     finishTurn(
       cancelled
         ? { cancelled: true, silent: silentTurn || undefined }
@@ -2893,6 +3031,10 @@ async function launchProviderTurn({
 }
 
 function cancel() {
+  codexModelFallbackInFlight = false;
+  codexReasoningFallbackInFlight = false;
+  codexErrorText = "";
+  codexErrorSurfaced = false;
   if (!currentProcess) return;
   cancelRequested = true;
   const proc = currentProcess;
@@ -2914,6 +3056,10 @@ function clear() {
   consecutiveQuestionReplies = 0;
   claudeResultErrored = false;
   resumeRetryInFlight = false;
+  codexModelFallbackInFlight = false;
+  codexReasoningFallbackInFlight = false;
+  codexErrorText = "";
+  codexErrorSurfaced = false;
   silentTurnKind = null;
   sawSilentDirective = false;
   updateConversationSummary();
@@ -2931,6 +3077,10 @@ function wipeSession() {
   consecutiveQuestionReplies = 0;
   claudeResultErrored = false;
   resumeRetryInFlight = false;
+  codexModelFallbackInFlight = false;
+  codexReasoningFallbackInFlight = false;
+  codexErrorText = "";
+  codexErrorSurfaced = false;
   silentTurnKind = null;
   sawSilentDirective = false;
   emitHistory();

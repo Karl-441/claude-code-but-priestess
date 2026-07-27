@@ -22,6 +22,11 @@ const skills = require("./skills");
 const { spawnCli } = require("./cli-spawn");
 const { normalizeCwd } = require("./chat-runtime");
 const { cleanDirectiveText, consumeDirectiveChunk } = require("./directive-stream");
+const {
+  classifyCodexRejection,
+  codexEventErrorText,
+  isCodexModelMetadataWarning
+} = require("./codex-errors");
 
 // ---------------------------------------------------------------------------
 // State
@@ -36,6 +41,8 @@ let midTurn = false;
 let outboundQueue = [];
 let vscodeSessionIds = {};
 let staleRetryInFlight = false;
+let codexModelFallbackInFlight = false;
+let codexReasoningFallbackInFlight = false;
 let providerErrorText = "";
 
 // Per-turn streaming state
@@ -122,6 +129,12 @@ function pushUser(text, context) {
     fs.appendFileSync(persona.conversationArchivePath(), line + "\n", "utf8");
   } catch (_) { /* best effort */ }
   return entry;
+}
+
+function pushSystem(text) {
+  history.push({ id: nextId(), role: "system", text, ts: Date.now() });
+  emit({ kind: "history", history: history.slice() });
+  saveConversation();
 }
 
 function beginAssistant() {
@@ -277,6 +290,8 @@ function drainOutboundQueue() {
     // This is a distinct user turn, not the internal retry of the previous
     // one, so it gets its own single stale-session recovery attempt.
     staleRetryInFlight = false;
+    codexModelFallbackInFlight = false;
+    codexReasoningFallbackInFlight = false;
     dispatchSend(next.text, next.context || null);
     return;
   }
@@ -382,8 +397,27 @@ function handleCodexLine(line) {
     }
   }
 
-  if (type.includes("error")) {
-    providerErrorText = String(event.message || event.error || JSON.stringify(event)).slice(0, 1000);
+  const eventErrorText = codexEventErrorText(event);
+  const itemType = String(event.item?.type || event.event?.item?.type || "");
+  const isErrorEvent =
+    Boolean(eventErrorText) ||
+    type.includes("error") ||
+    type.endsWith(".failed") ||
+    itemType.includes("error");
+  if (isErrorEvent) {
+    const errorText =
+      eventErrorText ||
+      (typeof event.message === "string" ? event.message : "") ||
+      (typeof event.error === "string" ? event.error : "") ||
+      JSON.stringify(event);
+    if (
+      !isCodexModelMetadataWarning(errorText) ||
+      classifyCodexRejection(errorText)
+    ) {
+      providerErrorText = providerErrorText
+        ? `${providerErrorText}\n${errorText}`.slice(-4000)
+        : String(errorText).slice(0, 4000);
+    }
     return;
   }
 
@@ -600,6 +634,40 @@ function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
       return;
     }
 
+    const codexRejection =
+      provider === "codex" ? classifyCodexRejection(errorText) : "";
+    const badCodexReasoning = String(settings.get("codexReasoningEffort") || "").trim();
+    if (
+      provider === "codex" &&
+      !codexReasoningFallbackInFlight &&
+      codexRejection === "reasoning" &&
+      badCodexReasoning
+    ) {
+      settings.set({ codexReasoningEffort: "" });
+      vscodeSessionIds.codex = null;
+      codexReasoningFallbackInFlight = true;
+      if (currentAssistantId) discardAssistant();
+      pushSystem(`Codex 推理强度 \`${badCodexReasoning}\` 不可用，已恢复默认并重试。`);
+      dispatchSend(trimmed, context, { userAlreadyShown: true });
+      return;
+    }
+
+    const badCodexModel = String(settings.get("codexModel") || "").trim();
+    if (
+      provider === "codex" &&
+      !codexModelFallbackInFlight &&
+      codexRejection === "model" &&
+      badCodexModel
+    ) {
+      settings.set({ codexModel: "" });
+      vscodeSessionIds.codex = null;
+      codexModelFallbackInFlight = true;
+      if (currentAssistantId) discardAssistant();
+      pushSystem(`Codex 模型 \`${badCodexModel}\` 不可用，已恢复默认并重试。`);
+      dispatchSend(trimmed, context, { userAlreadyShown: true });
+      return;
+    }
+
     if (currentAssistantId) {
       if (pendingAssistantText || (code === 0 && !providerErrorText)) finalizeAssistant();
       else discardAssistant();
@@ -617,6 +685,8 @@ function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
       emit({ kind: "status", status: "idle", provider });
     }
 
+    codexModelFallbackInFlight = false;
+    codexReasoningFallbackInFlight = false;
     drainOutboundQueue();
   });
 
@@ -625,6 +695,8 @@ function dispatchSend(trimmed, context, { userAlreadyShown = false } = {}) {
     currentProcess = null;
     midTurn = false;
     staleRetryInFlight = false;
+    codexModelFallbackInFlight = false;
+    codexReasoningFallbackInFlight = false;
     if (currentAssistantId) {
       if (pendingAssistantText) finalizeAssistant();
       else discardAssistant();
@@ -651,13 +723,17 @@ function send(text, context) {
     outboundQueue.push({ text: trimmed, context: context || null });
     return { ok: true, queued: true, queueLength: outboundQueue.length };
   }
-  staleRetryInFlight = false;
+  staleRetryInFlight = false; // new user message — clear self-heal guard
+  codexModelFallbackInFlight = false;
+  codexReasoningFallbackInFlight = false;
   dispatchSend(trimmed, context || null);
   return { ok: true };
 }
 
 function cancel() {
   directiveTurnToken += 1;
+  codexModelFallbackInFlight = false;
+  codexReasoningFallbackInFlight = false;
   if (currentProcess) {
     const proc = currentProcess;
     currentProcess = null;
