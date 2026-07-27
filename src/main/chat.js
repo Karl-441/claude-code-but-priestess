@@ -12,7 +12,11 @@ const persona = require("./persona");
 const skills = require("./skills");
 const priestessProvider = require("./priestess-provider");
 const { spawnCli, spawnCliSync } = require("./cli-spawn");
-const { buildCodexExecArgs, resolveResumeSessionId } = require("./chat-runtime");
+const {
+  attachmentTempName,
+  buildCodexExecArgs,
+  resolveResumeSessionId
+} = require("./chat-runtime");
 const { parseClaudeEffortLevels } = require("./claude-capabilities");
 const {
   compatibleReasoningEffort,
@@ -270,7 +274,7 @@ function resolveAttachmentsForBackend(paths) {
   if (!paths.some(isImagePath)) return paths;
   let dir = null;
   let img = null;
-  return paths.map((p) => {
+  return paths.map((p, index) => {
     if (!isImagePath(p)) return p;
     try {
       const { nativeImage } = require("electron");
@@ -287,7 +291,7 @@ function resolveAttachmentsForBackend(paths) {
         fs.rmSync(dir, { recursive: true, force: true });
         fs.mkdirSync(dir, { recursive: true });
       }
-      const out = path.join(dir, path.basename(p).replace(/\.[^.]+$/, "") + ".png");
+      const out = path.join(dir, attachmentTempName(p, index));
       fs.writeFileSync(out, resized.toPNG());
       return out;
     } catch {
@@ -2462,7 +2466,7 @@ function send(text, attachments) {
 
 function dispatchSend(
   trimmed,
-  { userAlreadyShown = false, chained = false, forceScreenshot = false, silentUser = false, vibeCodingMode: vibeCodingModeOverride = null, attachments = [] } = {}
+  { userAlreadyShown = false, chained = false, forceScreenshot = false, silentUser = false, vibeCodingMode: vibeCodingModeOverride = null, attachments = [], resolvedAttachments = null } = {}
 ) {
   if (currentProcess || turnLaunching) return { ok: false, reason: "busy" };
   if (quitPending) return { ok: false, reason: "quitting" };
@@ -2477,9 +2481,16 @@ function dispatchSend(
   // Attachments belong only to this real turn; silent self-turns never carry any.
   // Backend copies get downscaled (faster/cheaper vision); the bubble keeps the
   // full original, which was attached to the history entry above.
+  //
+  // A retry replays a turn whose images were downscaled already, and hands them
+  // back through `resolvedAttachments`. Re-resolving them would be worse than
+  // wasteful: the resolver wipes its temp directory the moment it has anything
+  // to downscale, which would delete the very files being replayed.
   pendingAttachments = silentTurnKind
     ? []
-    : resolveAttachmentsForBackend(Array.isArray(attachments) ? attachments : []);
+    : Array.isArray(resolvedAttachments)
+      ? resolvedAttachments
+      : resolveAttachmentsForBackend(Array.isArray(attachments) ? attachments : []);
 
   // A genuine new user turn — reset the Codex auto-continue guard.
   if (!chained) {
@@ -2832,6 +2843,10 @@ async function launchProviderTurn({
       resumeRetryInFlight = true;
       claudeResultErrored = false;
       const retrySilentKind = silentTurnKind;
+      // Read now, not inside the callback: pendingAttachments is module state
+      // that the next turn overwrites, so a deferred read can replay the wrong
+      // images — or none.
+      const retryAttachments = pendingAttachments;
       if (pendingAssistantId) finalizeAssistant(""); // clears the empty bubble
       cleanupInvocation(invocation);
       currentProcess = null;
@@ -2841,7 +2856,8 @@ async function launchProviderTurn({
       setImmediate(() => dispatchSend(trimmed, {
         userAlreadyShown: true,
         chained: true,
-        silentUser: Boolean(retrySilentKind)
+        silentUser: Boolean(retrySilentKind),
+        resolvedAttachments: retryAttachments
       }));
       return;
     }
@@ -2860,6 +2876,10 @@ async function launchProviderTurn({
       claudeModelFallbackInFlight = true;
       claudeModelInvalid = false;
       const retrySilentKind = silentTurnKind;
+      // Read now, not inside the callback: pendingAttachments is module state
+      // that the next turn overwrites, so a deferred read can replay the wrong
+      // images — or none.
+      const retryAttachments = pendingAttachments;
       if (pendingAssistantId) finalizeAssistant("");
       pushSystem(`Claude 模型 \`${badClaudeModel}\` 当前账号不可用，已切回默认并重试。`);
       cleanupInvocation(invocation);
@@ -2869,7 +2889,8 @@ async function launchProviderTurn({
       setImmediate(() => dispatchSend(trimmed, {
         userAlreadyShown: true,
         chained: true,
-        silentUser: Boolean(retrySilentKind)
+        silentUser: Boolean(retrySilentKind),
+        resolvedAttachments: retryAttachments
       }));
       return;
     }
@@ -2889,6 +2910,10 @@ async function launchProviderTurn({
       sessionIds[PROVIDERS.CODEX] = null;
       codexReasoningFallbackInFlight = true;
       const retrySilentKind = silentTurnKind;
+      // Read now, not inside the callback: pendingAttachments is module state
+      // that the next turn overwrites, so a deferred read can replay the wrong
+      // images — or none.
+      const retryAttachments = pendingAttachments;
       if (pendingAssistantId) finalizeAssistant("");
       pushSystem(`Codex 推理强度 \`${badCodexReasoning}\` 不可用，已恢复默认并重试。`);
       cleanupInvocation(invocation);
@@ -2898,7 +2923,8 @@ async function launchProviderTurn({
       setImmediate(() => dispatchSend(trimmed, {
         userAlreadyShown: true,
         chained: true,
-        silentUser: Boolean(retrySilentKind)
+        silentUser: Boolean(retrySilentKind),
+        resolvedAttachments: retryAttachments
       }));
       return;
     }
@@ -2917,6 +2943,10 @@ async function launchProviderTurn({
       sessionIds[PROVIDERS.CODEX] = null;
       codexModelFallbackInFlight = true;
       const retrySilentKind = silentTurnKind;
+      // Read now, not inside the callback: pendingAttachments is module state
+      // that the next turn overwrites, so a deferred read can replay the wrong
+      // images — or none.
+      const retryAttachments = pendingAttachments;
       if (pendingAssistantId) finalizeAssistant("");
       pushSystem(`Codex 模型 \`${badCodexModel}\` 不可用，已恢复默认并重试。`);
       cleanupInvocation(invocation);
@@ -2926,7 +2956,8 @@ async function launchProviderTurn({
       setImmediate(() => dispatchSend(trimmed, {
         userAlreadyShown: true,
         chained: true,
-        silentUser: Boolean(retrySilentKind)
+        silentUser: Boolean(retrySilentKind),
+        resolvedAttachments: retryAttachments
       }));
       return;
     }
