@@ -28,6 +28,7 @@ function buildCodexExecArgs({
   mode = "companion",
   resumeSessionId = null,
   model = "",
+  reasoningEffort = "",
   screenshotPath = null,
   attachmentArgs = [],
   memoryDir = ""
@@ -46,6 +47,9 @@ function buildCodexExecArgs({
   ];
 
   if (model) args.push("--model", model);
+  if (reasoningEffort) {
+    args.push("-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`);
+  }
   if (isAgent) {
     args.push("--dangerously-bypass-approvals-and-sandbox");
   } else {

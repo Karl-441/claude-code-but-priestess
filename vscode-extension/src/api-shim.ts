@@ -28,6 +28,16 @@ export function generateApiShim(options: {
   window.addEventListener("message", function (e) {
     const msg = e.data;
     if (!msg || typeof msg !== "object") return;
+    // The stylesheet is shared with the Electron popover, where PRTS drives
+    // both the window background and prefers-color-scheme, so they always
+    // agree. Here the background comes from the VS Code theme while
+    // prefers-color-scheme follows the OS, and a light OS with a dark editor
+    // theme leaves light-mode text on a dark surface. The attribute overrides
+    // in styles.css settle it in favour of the editor.
+    if (msg.type === "theme" && (msg.scheme === "dark" || msg.scheme === "light")) {
+      document.documentElement.dataset.theme = msg.scheme;
+      return;
+    }
     if (msg.reqId && pending.has(msg.reqId)) {
       const p = pending.get(msg.reqId);
       clearTimeout(p.timer);

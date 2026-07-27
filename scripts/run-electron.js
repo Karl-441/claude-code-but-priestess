@@ -103,8 +103,34 @@ let child;
 let logTail = null;
 let devAppPath = null;
 
+function stopDarwinDevApp(targetApp, waitForExit = false) {
+  if (process.platform !== "darwin" || !targetApp) return false;
+  const pattern = `${targetApp}/Contents/MacOS/Electron`;
+  try {
+    const killed = spawnSync("pkill", ["-f", pattern], { stdio: "ignore" });
+    if (killed.status !== 0) return false;
+    if (waitForExit) {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const running = spawnSync("pgrep", ["-f", pattern], { stdio: "ignore" });
+        if (running.status !== 0) break;
+        spawnSync("/bin/sleep", ["0.05"], { stdio: "ignore" });
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 if (process.platform === "darwin") {
   devAppPath = ensureDarwinDevApp(electron);
+  // A prior terminal crash can orphan PRTS Dev. Without this cleanup, the
+  // single-instance lock keeps that old process alive and `npm run dev` appears
+  // to ignore new source changes. The dev bundle has its own path/id, so this
+  // never touches the packaged /Applications/PRTS.app.
+  if (stopDarwinDevApp(devAppPath, true)) {
+    console.log("[run-electron] stopped stale PRTS Dev instance");
+  }
   // Launch through LaunchServices (`open`) instead of exec'ing the Electron
   // binary directly. On macOS Tahoe (26), an app started by a bare exec is not
   // registered the way Finder registers it, and its menu-bar status item (the
@@ -160,12 +186,7 @@ function exitCodeForSignal(signal) {
 // `open` detaches the launched app from this process tree, so killing `child`
 // (the `open` waiter) won't stop the app. Terminate the dev app explicitly.
 function quitDevApp() {
-  if (process.platform !== "darwin" || !devAppPath) return;
-  try {
-    spawnSync("pkill", ["-f", `${devAppPath}/Contents/MacOS/Electron`], { stdio: "ignore" });
-  } catch {
-    /* best effort */
-  }
+  stopDarwinDevApp(devAppPath);
 }
 
 function stopLogTail() {

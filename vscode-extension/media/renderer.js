@@ -271,7 +271,18 @@ function prepareTransparentFrame(image) {
   source.height = image.naturalHeight;
   const srcCtx = source.getContext("2d", { willReadFrequently: true });
   srcCtx.drawImage(image, 0, 0);
-  const imageData = srcCtx.getImageData(0, 0, source.width, source.height);
+  let imageData;
+  try {
+    imageData = srcCtx.getImageData(0, 0, source.width, source.height);
+  } catch {
+    // A tainted canvas denies pixel reads. The shipped frames already carry
+    // their alpha, so the fill has nothing to remove and only the crop is
+    // lost: an untrimmed character still renders, which beats a blank stage.
+    return {
+      canvas: source,
+      bbox: { minX: 0, minY: 0, maxX: source.width - 1, maxY: source.height - 1 }
+    };
+  }
   const { data, width, height } = imageData;
 
   // Shipped frames have their background (and the enclosed hair gaps, which
@@ -382,11 +393,23 @@ function prepareTransparentFrame(image) {
   return { canvas: source, bbox: { minX, minY, maxX, maxY } };
 }
 
-async function loadFrame(fileName, dir) {
+function decodeImage(href, crossOrigin) {
   const image = new Image();
   image.decoding = "async";
-  image.src = new URL(fileName, dir).href;
-  await image.decode();
+  if (crossOrigin) image.crossOrigin = crossOrigin;
+  image.src = href;
+  return image.decode().then(() => image);
+}
+
+async function loadFrame(fileName, dir) {
+  const href = new URL(fileName, dir).href;
+  // Frames are served from a different origin than the document in the VS Code
+  // webview, and drawing one in taints the canvas that prepareTransparentFrame
+  // reads back. Ask for CORS first so the trim below keeps working; hosts that
+  // serve the frames same-origin (the Electron popover) ignore the attribute,
+  // and a host that sends no CORS headers fails the decode instead of the
+  // pixel read — hence the plain retry.
+  const image = await decodeImage(href, "anonymous").catch(() => decodeImage(href, null));
   return prepareTransparentFrame(image);
 }
 
