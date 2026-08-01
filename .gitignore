@@ -10,5 +10,8 @@ AGENTS.md
 
 # VS Code extension build output
 vscode-extension/out/
+# VS Code extension test artifacts (downloaded VS Code instance)
+vscode-extension/.vscode-test/
+
 *.vsix
 GPT-SoVITS-v2pro-20250604/
