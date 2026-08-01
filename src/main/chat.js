@@ -247,7 +247,7 @@ function providerSessionPlan(provider) {
 // prompt by persona.js (no --add-dir: `codex exec resume` rejects that flag).
 function codexAttachmentArgs() {
   const args = [];
-  for (const p of pendingAttachments) {
+  for (const p of filterBlacklistedPaths(pendingAttachments)) {
     if (isImagePath(p)) args.push("-i", p);
   }
   return args;
@@ -259,10 +259,20 @@ function codexAttachmentArgs() {
 // non-agent turns answer "no photo". Text files are inlined, so only images.
 function attachmentDirArgs() {
   const dirs = new Set();
-  for (const p of pendingAttachments) if (isImagePath(p)) dirs.add(path.dirname(p));
+  for (const p of filterBlacklistedPaths(pendingAttachments)) if (isImagePath(p)) dirs.add(path.dirname(p));
   const args = [];
   for (const d of dirs) args.push("--add-dir", d);
   return args;
+}
+
+// Drop blacklisted attachments before they reach any CLI arg or inline prompt.
+// The advisor file blacklist is a real deny here (absolute-path match), not just
+// a persona hint - Read/-i/--add-dir never see these paths.
+function filterBlacklistedPaths(paths) {
+  if (!Array.isArray(paths) || !paths.length) return paths;
+  const patterns = parseBlacklist(settings.get("advisorFileBlacklist"));
+  if (!patterns.length) return paths;
+  return paths.filter((p) => !isBlacklisted(path.resolve(String(p)), patterns));
 }
 
 // Vision cost + latency scale with pixels, so cap oversized images before they
@@ -2454,9 +2464,11 @@ function buildProviderInvocation(provider, trimmed, cwd, vibeCodingMode, screens
 }
 
 function send(text, attachments) {
-  const files = Array.isArray(attachments)
-    ? attachments.filter((p) => typeof p === "string" && p.trim())
-    : [];
+  const files = filterBlacklistedPaths(
+    Array.isArray(attachments)
+      ? attachments.filter((p) => typeof p === "string" && p.trim())
+      : []
+  );
   let trimmed = String(text ?? "").trim();
   if (!trimmed && files.length === 0) return { ok: false, reason: "empty" };
   if (!trimmed) trimmed = "看看这些。"; // attachments with no text of their own
@@ -3339,3 +3351,4 @@ module.exports = {
   consumeDirectives,
   stripDirectiveTags,
 };
+
