@@ -84,6 +84,7 @@ const NOTIFY_TYPES = new Set([
   "vscode:diagnostics",
   "vscode:activity",
   "vscode:workspace",
+    "vscode:terminal-event",
   // Fire-and-forget chat controls
   "chat:cancel",
   "conversation:new",
