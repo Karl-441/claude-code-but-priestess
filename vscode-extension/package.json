@@ -13,8 +13,13 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Chat", "Other"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Chat",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -213,7 +218,9 @@
     "vscode:package": "vsce package",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package"
+    "package": "vsce package",
+    "test": "tsc -p ./ && node ./out/src/test/runTest.js",
+    "test:compile": "tsc -p ./"
   },
   "dependencies": {
     "ws": "^8.18.0"
@@ -221,7 +228,8 @@
   "devDependencies": {
     "@types/vscode": "^1.85.0",
     "@types/ws": "^8.5.10",
-    "typescript": "^5.3.0",
-    "@vscode/vsce": "^3.9.2"
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.3.0"
   }
 }
