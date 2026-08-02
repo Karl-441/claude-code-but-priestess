@@ -89,22 +89,6 @@ function manualPortConfig(): { port: number; token: string } | null {
   return null;
 }
 
-const NOTIFY_TYPES = new Set([
-  // VS Code lifecycle — no response expected
-  "vscode:active",
-  "vscode:inactive",
-  "vscode:focus",
-  // Editor events — fire-and-forget
-  "vscode:context",
-  "vscode:diagnostics",
-  "vscode:activity",
-  "vscode:workspace",
-    "vscode:terminal-event",
-  // Fire-and-forget chat controls
-  "chat:cancel",
-  "conversation:new",
-  "conversation:restore",
-]);
 
 export class WsClient extends EventEmitter {
   private ws: any = null;
@@ -304,15 +288,6 @@ export class WsClient extends EventEmitter {
         }
       }
     });
-  }
-
-  /** Backward-compat: same as request() but skips the Promise for notify types. */
-  send(type: string, data?: Record<string, any>): Promise<any> {
-    if (NOTIFY_TYPES.has(type)) {
-      this.notify(type, data);
-      return Promise.resolve();
-    }
-    return this.request(type, data);
   }
 
   private scheduleReconnect() {

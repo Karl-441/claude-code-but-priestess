@@ -21,12 +21,17 @@ interface PendingCall {
 
 function makeWsClient() {
   const pending: PendingCall[] = [];
+  const notifyCalls: Array<{ type: string; data: any }> = [];
   return {
     pending,
-    send: (type: string, data?: any) =>
+    notifyCalls,
+    request: (type: string, data?: any) =>
       new Promise<any>((resolve, reject) => {
         pending.push({ type, data, resolve, reject });
       }),
+    notify: (type: string, data?: any) => {
+      notifyCalls.push({ type, data });
+    },
   };
 }
 

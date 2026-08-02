@@ -56,7 +56,7 @@ export function activate(context: vscode.ExtensionContext) {
       const text = editor.document.getText(selection);
       const ctx = contextCapture?.getCurrentContext();
       if (wsClient && wsClient.isConnected()) {
-        wsClient.send("vscode:selection-to-chat", { text, context: ctx });
+        wsClient.notify("vscode:selection-to-chat", { text, context: ctx });
         vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
       }
     })
@@ -65,7 +65,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("prts.newConversation", () => {
       if (wsClient && wsClient.isConnected()) {
-        wsClient.send("conversation:new");
+        wsClient.notify("conversation:new");
         vscode.window.showInformationMessage("PRTS: started a new conversation");
       }
     })
@@ -74,7 +74,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand("prts.restoreConversation", () => {
       if (wsClient && wsClient.isConnected()) {
-        wsClient.send("conversation:restore");
+        wsClient.notify("conversation:restore");
         vscode.window.showInformationMessage("PRTS: restored previous conversation");
       }
     })
@@ -85,12 +85,12 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("prts.toggleVibeCoding", async () => {
       if (!wsClient || !wsClient.isConnected()) return;
       try {
-        const res: any = await wsClient.send("settings:get");
+        const res: any = await wsClient.request("settings:get");
         const state = res?.state || {};
         const current = state.vibeCodingMode || "companion";
         // Only companion and advisor — agent is the tray app's domain.
         const next = current === "companion" ? "advisor" : "companion";
-        await wsClient.send("settings:set", { patch: { vibeCodingMode: next } });
+        await wsClient.request("settings:set", { patch: { vibeCodingMode: next } });
         const labels: Record<string, string> = {
           companion: "💬 陪伴模式（仅聊天）",
           advisor: "👁 顾问模式（只读工具）",
@@ -160,7 +160,7 @@ export function activate(context: vscode.ExtensionContext) {
         `\n请分析这段代码的问题并给出修复方案。用代码块展示修改后的完整代码。`;
 
       if (wsClient && wsClient.isConnected()) {
-        wsClient.send("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
+        wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
         vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
       }
     })
@@ -197,7 +197,7 @@ export function activate(context: vscode.ExtensionContext) {
         `\n请解释这个错误的原因，并给出具体的修复方案。`;
 
       if (wsClient && wsClient.isConnected()) {
-        wsClient.send("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
+        wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
         vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
       }
     })
@@ -229,7 +229,7 @@ export function activate(context: vscode.ExtensionContext) {
         `\n\`\`\`${lang}\n${truncated}\n\`\`\``;
 
       if (wsClient && wsClient.isConnected()) {
-        wsClient.send("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
+        wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
         vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
       }
     })
@@ -256,7 +256,7 @@ export function activate(context: vscode.ExtensionContext) {
           `\n请用简洁的语言总结最近的代码改动，指出潜在的风险区域。`;
 
         if (wsClient && wsClient.isConnected()) {
-          wsClient.send("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
+          wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
           vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
         }
       } catch (err) {
@@ -303,7 +303,7 @@ export function activate(context: vscode.ExtensionContext) {
         `\n\`\`\`${lang}\n${truncated}\n\`\`\``;
 
       if (wsClient && wsClient.isConnected()) {
-        wsClient.send("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
+        wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
         vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
       }
     })
@@ -314,7 +314,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.window.onDidChangeWindowState((state) => {
       if (wsClient && wsClient.isConnected()) {
-        wsClient.send("vscode:focus", { focused: state.focused });
+        wsClient.notify("vscode:focus", { focused: state.focused });
       }
     })
   );
@@ -326,20 +326,22 @@ export function activate(context: vscode.ExtensionContext) {
   // On first connect: send vscode:active, sync advisor blacklist from VS Code config,
   // and auto-switch to advisor mode if a workspace is open.
   (wsClient as any).on("connected", () => {
-    wsClient!.send("vscode:active");
+    wsClient!.notify("vscode:active");
     // Sync the advisor file blacklist from VS Code settings to Electron.
     const blacklist = vscode.workspace.getConfiguration("prts").get<string>("advisorFileBlacklist");
     if (typeof blacklist === "string") {
-      wsClient!.send("settings:set", { patch: { advisorFileBlacklist: blacklist } });
+      // Fire-and-forget sync - a failing settings write is not worth an error
+// dialog on every connect, so swallow the rejection explicitly.
+wsClient!.request("settings:set", { patch: { advisorFileBlacklist: blacklist } }).catch(() => {});
     }
     // Auto-switch to advisor once per session when a workspace folder is present.
     if (!autoSwitchedToAdvisor) {
       const folders = vscode.workspace.workspaceFolders;
       if (folders && folders.length > 0) {
-        wsClient!.send("settings:get").then((res: any) => {
+        wsClient!.request("settings:get").then((res: any) => {
           const mode = res?.state?.vibeCodingMode || "companion";
           if (mode === "companion") {
-            wsClient!.send("settings:set", { patch: { vibeCodingMode: "advisor" } });
+            wsClient!.request("settings:set", { patch: { vibeCodingMode: "advisor" } });
             autoSwitchedToAdvisor = true;
           }
         }).catch(() => {});
@@ -362,9 +364,9 @@ export function activate(context: vscode.ExtensionContext) {
         )
         .then((choice) => {
           if (choice === "Restore") {
-            wsClient!.send("conversation:restore");
+            wsClient!.notify("conversation:restore");
           } else if (choice === "Start Fresh") {
-            wsClient!.send("conversation:new");
+            wsClient!.notify("conversation:new");
           }
         });
     }

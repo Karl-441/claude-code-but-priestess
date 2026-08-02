@@ -14,7 +14,8 @@ function makeWsMock() {
     listeners,
     calls,
     on(type: string, cb: Function) { listeners[type] = cb; },
-    send(type: string, data?: any) { calls.push({ type, data }); return Promise.resolve(); },
+    notify(type: string, data?: any) { calls.push({ type, data }); },
+    request(type: string, data?: any) { calls.push({ type, data }); return Promise.resolve(); },
     isConnected() { return true; },
   };
 }

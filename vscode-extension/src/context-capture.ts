@@ -187,7 +187,7 @@ export class ContextCapture {
             terminalBuffer = "";
             const parsed = this.parseTerminalOutput(txt);
             if (parsed) {
-              this.wsClient.send("vscode:terminal-event", parsed);
+              this.wsClient.notify("vscode:terminal-event", parsed);
             }
           }, 500); // debounce: wait 500ms of silence before parsing
         })
@@ -218,7 +218,7 @@ export class ContextCapture {
   /** Forces an immediate context flush to the Electron backend. */
   flushContext(): void {
     if (!this.wsClient?.isConnected()) return;
-    this.wsClient.send("vscode:context", { context: this.currentContext });
+    this.wsClient.notify("vscode:context", { context: this.currentContext });
   }
 
   dispose(): void {
@@ -344,7 +344,7 @@ export class ContextCapture {
       this.diagnosticsDebounceTimer = null;
       this.diagnosticsSnapshot = this.captureDiagnostics();
       if (!this.wsClient?.isConnected()) return;
-      this.wsClient.send("vscode:diagnostics", {
+      this.wsClient.notify("vscode:diagnostics", {
         diagnostics: this.diagnosticsSnapshot,
       });
     }, 2000); // 2s debounce — diagnostics can fire in bursts
@@ -357,7 +357,7 @@ export class ContextCapture {
   private sendWorkspace(): void {
     if (!this.wsClient?.isConnected()) return;
     const folders = (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath);
-    this.wsClient.send("vscode:workspace", {
+    this.wsClient.notify("vscode:workspace", {
       workspaceFolders: folders,
       primaryWorkspace: folders[0] || null,
     });
@@ -373,7 +373,7 @@ export class ContextCapture {
     if (activity.kind === "save") {
       this.sendActivityImpl("vscode:activity", { activity });
     } else {
-      this.wsClient.send("vscode:activity", { activity });
+      this.wsClient.notify("vscode:activity", { activity });
     }
   }
 
@@ -384,7 +384,7 @@ export class ContextCapture {
       if (now - this.lastSaveTs < 3000) return;
       this.lastSaveTs = now;
     }
-    this.wsClient.send(type, payload);
+    this.wsClient.notify(type, payload);
   }
 
   // -----------------------------------------------------------------------

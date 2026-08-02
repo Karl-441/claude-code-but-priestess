@@ -327,7 +327,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     switch (type) {
       case "chat:send":
         this.wsClient
-          .send("chat:send", {
+          .request("chat:send", {
             text: msg.text,
             context: this.contextCapture?.getCurrentContext() || null,
           })
@@ -345,11 +345,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       case "chat:cancel":
         // chat:cancel is a fire-and-forget notification - the server never
         // replies, so there is nothing to resolve or reject here.
-        this.wsClient.send("chat:cancel");
+        this.wsClient.notify("chat:cancel");
         break;
       case "chat:clear":
         this.wsClient
-          .send("chat:clear")
+          .request("chat:clear")
           .then((res: any) => {
             webview.postMessage({ type: "chat:clear:result", reqId: msg.reqId });
           })
@@ -359,7 +359,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         break;
       case "chat:get-history":
         this.wsClient
-          .send("chat:get-history")
+          .request("chat:get-history")
           .then((res: any) => {
             webview.postMessage({
               type: "chat:get-history:result",
@@ -373,7 +373,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         break;
       case "settings:get":
         this.wsClient
-          .send("settings:get")
+          .request("settings:get")
           .then((res: any) => {
             webview.postMessage({
               type: "settings:get:result",
@@ -387,14 +387,14 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         break;
       case "settings:set":
         this.wsClient
-          .send("settings:set", { patch: msg.patch })
+          .request("settings:set", { patch: msg.patch })
           .catch((err: any) => {
             this.replyWithError(webview, "settings:set:result", msg.reqId, err);
           });
         break;
       case "desktop-pet:cat-mode-get":
         this.wsClient
-          .send("desktop-pet:cat-mode-get")
+          .request("desktop-pet:cat-mode-get")
           .then((res: any) => {
             webview.postMessage({
               type: "desktop-pet:cat-mode-get:result",
