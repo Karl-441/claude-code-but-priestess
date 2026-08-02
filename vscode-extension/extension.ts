@@ -3,6 +3,7 @@ import { WsClient } from "./src/ws-client";
 import { ChatPanelProvider } from "./src/chat-panel";
 import { ContextCapture } from "./src/context-capture";
 import { InlineCompletionProvider } from "./src/inline-provider";
+import { buildRecentChangesSummary } from "./src/git-summary";
 
 let wsClient: WsClient | null = null;
 let contextCapture: ContextCapture | null = null;
@@ -244,15 +245,10 @@ export function activate(context: vscode.ExtensionContext) {
           return;
         }
         const cwd = folders[0].uri.fsPath;
-        const { execSync } = require("child_process");
-        let gitInfo = "";
-        try {
-          const log = execSync('git log --oneline -10', { cwd, encoding: "utf8", timeout: 5000 }).trim();
-          const diffStat = execSync('git diff --stat HEAD~5..HEAD', { cwd, encoding: "utf8", timeout: 5000 }).trim();
-          gitInfo = `最近 10 次 commit:\n${log}\n\n最近 5 次改动的文件:\n${diffStat}`;
-        } catch {
-          gitInfo = "(无法获取 git 信息——当前工作区可能不是 git 仓库)";
-        }
+        // Async git collection (execFile-based). execSync would block the
+        // extension host event loop and freeze the VS Code UI for up to the
+        // timeout while git runs.
+        const gitInfo = await buildRecentChangesSummary(cwd);
 
         const prompt =
           `【博士的请求 — 总结近期改动】\n` +
