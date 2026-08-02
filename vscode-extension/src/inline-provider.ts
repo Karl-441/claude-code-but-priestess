@@ -7,6 +7,16 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingResolve: ((items: vscode.InlineCompletionItem[]) => void) | null = null;
 
+  /**
+   * True while a `chat:inline-complete` request is in flight. The backend
+   * spawns a fresh CLI subprocess for every completion request, and the editor
+   * asks for completions on every pause while the user types. Without this
+   * guard a short burst of typing could fork several CLI processes at once;
+   * requests that arrive while one is already running are dropped, and the
+   * next pause simply triggers a fresh completion.
+   */
+  private inFlight = false;
+
   constructor(private wsClient: any) {}
 
   async provideInlineCompletionItems(
@@ -40,37 +50,62 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
         this.pendingResolve = null;
         try {
           if (!this.wsClient?.isConnected()) { resolve([]); return; }
-          // Skip if no CLI provider available — don't waste requests.
-          const avail = this.wsClient._providerAvailability;
+          // Skip when the server has told us there is no usable CLI provider
+          // (e.g. priestess-only mode). The snapshot is maintained by WsClient
+          // whenever a chat:status message arrives; null means we have not
+          // heard from the server yet, in which case we ask anyway.
+          const avail = this.wsClient.providerAvailability;
           if (avail && (!avail.activeProvider || avail.activeProvider === "priestess")) {
             resolve([]); return;
           }
           const lang = document.languageId;
           const file = document.fileName.split(/[\\/]/).pop();
 
-          // Send a lightweight completion request.
-          const result = await this.wsClient.request("chat:inline-complete", {
-            prefix,
-            file,
-            language: lang,
-          });
+          // requestCompletion() itself drops the request if another one is
+          // still in flight, so we can never stack backend CLI spawns.
+          const items = await this.requestCompletion(prefix, file, lang, position);
 
-          if (_token.isCancellationRequested || !result?.text) {
+          if (_token.isCancellationRequested || !items) {
             resolve([]);
             return;
           }
 
           // Return the completion as ghost text.
-          const item = new vscode.InlineCompletionItem(
-            result.text,
-            new vscode.Range(position, position)
-          );
-          resolve([item]);
+          resolve(items);
         } catch {
           resolve([]);
         }
       }, DEBOUNCE_MS);
     });
+  }
+
+  /**
+   * Sends a single completion request to the backend, guaranteeing that at
+   * most one is in flight at a time. Returns null when the request was dropped
+   * (another one already running) or the backend had no suggestion.
+   */
+  private async requestCompletion(
+    prefix: string,
+    file: string | undefined,
+    language: string,
+    position: vscode.Position
+  ): Promise<vscode.InlineCompletionItem[] | null> {
+    if (this.inFlight) return null;
+    this.inFlight = true;
+    try {
+      // Send a lightweight completion request.
+      const result = await this.wsClient.request("chat:inline-complete", {
+        prefix,
+        file,
+        language,
+      });
+      if (!result?.text) return null;
+      return [new vscode.InlineCompletionItem(result.text, new vscode.Range(position, position))];
+    } finally {
+      // Always release the flag so a later request is not blocked forever
+      // (e.g. if the backend promise rejects).
+      this.inFlight = false;
+    }
   }
 
   dispose() {

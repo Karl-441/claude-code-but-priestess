@@ -217,6 +217,31 @@ describe("ws-client", () => {
     assert.strictEqual(client.isConnected(), true);
   });
 
+  it("tracks provider availability from chat:status messages", async () => {
+    wss = await startServer();
+    const received: any[] = [];
+    wss.on("connection", (ws) => {
+      ws.on("message", (data: Buffer) => {
+        const msg = JSON.parse(String(data));
+        received.push(msg);
+        if (msg.type === "auth") {
+          ws.send(JSON.stringify({ type: "auth:ok", version: "test" }));
+          // The server announces CLI provider availability right after auth.
+          ws.send(JSON.stringify({ type: "chat:status", status: "idle", provider: "codex" }));
+        }
+      });
+    });
+    const root = makeDataRoot();
+    writePortFile(root, serverPort(wss));
+
+    client = new WsClient(makeContext() as any);
+    await waitForConnected(client);
+
+    const availability = (client as any).providerAvailability;
+    assert.ok(availability, "providerAvailability should be recorded from chat:status");
+    assert.strictEqual(availability.activeProvider, "codex");
+  });
+
   it("manual electronPort config is honoured but still requires the port-file token", async () => {
     wss = await startServer();
     const auth = wireAuth(wss);

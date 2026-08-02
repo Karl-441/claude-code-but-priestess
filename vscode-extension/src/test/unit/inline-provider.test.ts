@@ -13,7 +13,7 @@ function wait(ms: number): Promise<void> {
 
 function makeWs(overrides?: any) {
   return {
-    _providerAvailability: { activeProvider: "codex" },
+    providerAvailability: { activeProvider: "codex" },
     isConnected: () => true,
     request: async (_type: string, _data: any) => ({ text: "ghost-text" }),
     ...(overrides || {}),
@@ -53,7 +53,7 @@ describe("inline-provider", () => {
   });
 
   it("skips when provider info shows no active CLI provider", async () => {
-    provider = new InlineCompletionProvider(makeWs({ _providerAvailability: { activeProvider: null } }) as any);
+    provider = new InlineCompletionProvider(makeWs({ providerAvailability: { activeProvider: null } }) as any);
     const items = await provider.provideInlineCompletionItems(
       makeDoc("const x = ") as any, makePosition() as any, {} as any, makeToken() as any
     );
@@ -61,7 +61,7 @@ describe("inline-provider", () => {
   });
 
   it("skips when the active provider is the priestess bridge", async () => {
-    provider = new InlineCompletionProvider(makeWs({ _providerAvailability: { activeProvider: "priestess" } }) as any);
+    provider = new InlineCompletionProvider(makeWs({ providerAvailability: { activeProvider: "priestess" } }) as any);
     const items = await provider.provideInlineCompletionItems(
       makeDoc("const x = ") as any, makePosition() as any, {} as any, makeToken() as any
     );
@@ -119,4 +119,35 @@ describe("inline-provider", () => {
     assert.strictEqual(secondItems.length, 1, "the latest request should still complete");
     assert.strictEqual(secondItems[0].insertText, "late");
   });
+  it("drops new requests while one is already in flight", async () => {
+    let requestCallCount = 0;
+    let resolveRequest: ((v: any) => void) | null = null;
+    const ws = makeWs({
+      request: () => {
+        requestCallCount++;
+        return new Promise((resolve) => { resolveRequest = resolve; });
+      },
+    });
+    provider = new InlineCompletionProvider(ws as any);
+
+    const first = provider.provideInlineCompletionItems(
+      makeDoc("const x = ") as any, makePosition() as any, {} as any, makeToken() as any
+    );
+    await wait(350); // first request issued and now in flight
+    assert.strictEqual(requestCallCount, 1);
+
+    // While the first request is running, a new keystroke pause must not
+    // stack a second CLI spawn on the backend.
+    const second = provider.provideInlineCompletionItems(
+      makeDoc("const x = 1") as any, makePosition(0, 10) as any, {} as any, makeToken() as any
+    );
+    const secondItems = await second;
+    assert.deepStrictEqual(secondItems, []);
+    assert.strictEqual(requestCallCount, 1, "no second backend request while in flight");
+
+    resolveRequest!({ text: "ghost" });
+    const firstItems = await first;
+    assert.strictEqual(firstItems.length, 1, "the in-flight request still completes");
+  });
+
 });

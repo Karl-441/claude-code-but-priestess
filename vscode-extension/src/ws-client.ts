@@ -106,6 +106,15 @@ export class WsClient extends EventEmitter {
   private manualPort: number | null = null;
   private manualToken: string | null = null;
 
+  /**
+   * Snapshot of CLI provider availability as last reported by the server via
+   * a `chat:status` message (see ws-server.js / vscode-chat.js). `null` means
+   * "unknown": no chat:status has arrived yet. The inline completion provider
+   * reads this to avoid firing CLI completions when no usable CLI backend is
+   * configured (e.g. priestess-only mode).
+   */
+  providerAvailability: { activeProvider: string | null } | null = null;
+
   constructor(private context: vscode.ExtensionContext) {
     super();
     this.statusBarItem = vscode.window.createStatusBarItem(
@@ -213,6 +222,13 @@ export class WsClient extends EventEmitter {
       this.pending.delete(msg.reqId);
       pending.resolve(msg);
       return;
+    }
+
+    // Track CLI provider availability so inline completion can avoid wasted
+    // requests. This runs before the generic emit so subscribers observe an
+    // already-updated snapshot.
+    if (msg.type === "chat:status") {
+      this.providerAvailability = { activeProvider: msg.provider || null };
     }
 
     // Emit generic events for the API shim

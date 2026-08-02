@@ -817,8 +817,21 @@ function hasPreviousConversation() {
 // cross-platform spawning. Does NOT touch history, archive, or any shared turn state.
 const COMPLETION_TIMEOUT_MS = 4000;
 
+﻿let completionInFlight = false;
+
 async function complete(prefix, file, language) {
+  // Reject completion while a chat turn is streaming - the CLI is busy and
+  // spawning a second process would only pile up load.
   if (midTurn) return null;
+
+  // Reject completion while another completion is already running. Every
+  // completion request spawns a fresh CLI subprocess (Codex `exec -p` /
+  // Claude `-p`), and the VS Code inline provider fires after every ~300ms
+  // pause while the user types. Without this guard a short burst of typing
+  // could fork several CLI processes at once. Dropping the redundant ones
+  // keeps the system cheap; the next pause triggers a fresh completion.
+  if (completionInFlight) return null;
+
   const availability = chat.getProviderAvailability({ refresh: false });
   const provider = availability.activeProvider;
   if (!provider || provider === "priestess") return null;
@@ -830,7 +843,19 @@ async function complete(prefix, file, language) {
     `File: ${file || "unknown"} (${language || ""})\n\n` +
     prefix;
 
+  completionInFlight = true;
   return new Promise((resolve) => {
+    let settled = false;
+    // Every exit path must go through finish() so completionInFlight is
+    // released exactly once - a double release would let a second process
+    // start while the first is still running, defeating the guard above.
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      completionInFlight = false;
+      resolve(value);
+    };
+
     let args;
     const cwd = settings.get("chatCwd") || "";
     if (provider === "codex") {
@@ -852,26 +877,26 @@ async function complete(prefix, file, language) {
     const timer = setTimeout(() => {
       timedOut = true;
       try { proc.kill(); } catch (_) {}
-      resolve(null);
+      finish(null);
     }, COMPLETION_TIMEOUT_MS);
     timer.unref();
 
     proc.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
     proc.on("close", () => {
       clearTimeout(timer);
-      if (timedOut) return;
+      if (timedOut) return; // finish() already ran via the timeout path
       const text = (stdout || "").trim();
       const cleaned = text
         .replace(/^```[\w]*\n?/i, "")
         .replace(/\n?```$/i, "")
         .trim();
       if (cleaned && cleaned.length < 2000 && !/^(I|here|sure|certainly|this is)/i.test(cleaned)) {
-        resolve(cleaned);
+        finish(cleaned);
       } else {
-        resolve(null);
+        finish(null);
       }
     });
-    proc.on("error", () => { clearTimeout(timer); resolve(null); });
+    proc.on("error", () => { clearTimeout(timer); finish(null); });
   });
 }
 
