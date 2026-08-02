@@ -95,6 +95,22 @@ describe("context-capture", () => {
       assert.strictEqual(ctx.selection!.endLine, 5);
     });
 
+    it("truncates oversized selection text", () => {
+      inst = makeInstance();
+      const big = "x".repeat(25_000);
+      const doc = { fileName: "a.ts", languageId: "typescript", getText: () => big };
+      const selection = {
+        isEmpty: false,
+        active: { line: 1, character: 5 },
+        start: { line: 0, character: 0 },
+        end: { line: 1, character: 5 },
+      };
+      (inst.cc as any).refreshContext({ document: doc, selection });
+      const text = inst.cc.getCurrentContext().selection!.text;
+      assert.ok(text.length <= 20_020, "selection must be capped");
+      assert.ok(text.includes("已截断"), "truncation marker must be present");
+    });
+
     it("clears context when no editor is active", () => {
       inst = makeInstance();
       (inst.cc as any).refreshContext(undefined);

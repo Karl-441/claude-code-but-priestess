@@ -55,6 +55,14 @@ export interface TerminalEvent {
   timestamp: number;
 }
 
+/**
+ * Upper bound for selection text attached to chat context. The selection is
+ * sent over the WS bridge (server maxPayload is 4MB) and included in every
+ * prompt; a full-file selection on a huge file would blow both. Truncate
+ * with a marker so the model knows the selection was cut off.
+ */
+const MAX_SELECTION_CHARS = 20_000;
+
 // ---------------------------------------------------------------------------
 // ContextCapture
 // ---------------------------------------------------------------------------
@@ -261,9 +269,14 @@ export class ContextCapture {
     }
     const doc = editor.document;
     const sel = editor.selection;
-    const selectionText = sel.isEmpty
+    let selectionText = sel.isEmpty
       ? null
       : doc.getText(sel);
+    // Cap oversized selections (see MAX_SELECTION_CHARS) so a huge
+    // selection cannot blow the WS payload or inflate every prompt.
+    if (selectionText && selectionText.length > MAX_SELECTION_CHARS) {
+      selectionText = selectionText.slice(0, MAX_SELECTION_CHARS) + "\n…(选中内容过长已截断)";
+    }
 
     this.currentContext = {
       activeFile: doc.fileName,
