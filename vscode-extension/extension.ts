@@ -9,6 +9,29 @@ let wsClient: WsClient | null = null;
 let contextCapture: ContextCapture | null = null;
 let chatProvider: ChatPanelProvider | null = null;
 
+/**
+ * Returns true when the PRTS tray app is connected. When it is not, warns
+ * the user - commands that previously no-op'd silently now give feedback
+ * instead of looking broken.
+ */
+function requireConnected(): boolean {
+  if (wsClient && wsClient.isConnected()) return true;
+  vscode.window.showWarningMessage("PRTS: 未连接到托盘应用。");
+  return false;
+}
+
+/**
+ * Sends a user message to the PRTS chat through the WS bridge and opens the
+ * sidebar. Commands that previously inlined this triple (connection check,
+ * notify, open sidebar) now share one path.
+ */
+function sendToChat(text: string, context: any): boolean {
+  if (!requireConnected()) return false;
+  wsClient!.notify("vscode:selection-to-chat", { text, context: context || null });
+  vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
+  return true;
+}
+
 export function activate(context: vscode.ExtensionContext) {
   console.log("PRTS: activating…");
 
@@ -56,28 +79,23 @@ export function activate(context: vscode.ExtensionContext) {
       }
       const text = editor.document.getText(selection);
       const ctx = contextCapture?.getCurrentContext();
-      if (wsClient && wsClient.isConnected()) {
-        wsClient.notify("vscode:selection-to-chat", { text, context: ctx });
-        vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
-      }
+      sendToChat(text, ctx);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("prts.newConversation", () => {
-      if (wsClient && wsClient.isConnected()) {
-        wsClient.notify("conversation:new");
-        vscode.window.showInformationMessage("PRTS: started a new conversation");
-      }
+      if (!requireConnected()) return;
+      wsClient!.notify("conversation:new");
+      vscode.window.showInformationMessage("PRTS: started a new conversation");
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand("prts.restoreConversation", () => {
-      if (wsClient && wsClient.isConnected()) {
-        wsClient.notify("conversation:restore");
-        vscode.window.showInformationMessage("PRTS: restored previous conversation");
-      }
+      if (!requireConnected()) return;
+      wsClient!.notify("conversation:restore");
+      vscode.window.showInformationMessage("PRTS: restored previous conversation");
     })
   );
 
@@ -160,10 +178,7 @@ export function activate(context: vscode.ExtensionContext) {
         `\n博士选中的代码:\n\`\`\`${lang}\n${code}\n\`\`\`\n` +
         `\n请分析这段代码的问题并给出修复方案。用代码块展示修改后的完整代码。`;
 
-      if (wsClient && wsClient.isConnected()) {
-        wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
-        vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
-      }
+      sendToChat(prompt, contextCapture?.getCurrentContext());
     })
   );
 
@@ -197,10 +212,7 @@ export function activate(context: vscode.ExtensionContext) {
         `- 该行代码:\n\`\`\`${lang}\n${code}\n\`\`\`\n` +
         `\n请解释这个错误的原因，并给出具体的修复方案。`;
 
-      if (wsClient && wsClient.isConnected()) {
-        wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
-        vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
-      }
+      sendToChat(prompt, contextCapture?.getCurrentContext());
     })
   );
 
@@ -229,10 +241,7 @@ export function activate(context: vscode.ExtensionContext) {
         `\n请审查这个文件，找出潜在的问题、代码异味、安全隐患和改进建议。\n` +
         `\n\`\`\`${lang}\n${truncated}\n\`\`\``;
 
-      if (wsClient && wsClient.isConnected()) {
-        wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
-        vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
-      }
+      sendToChat(prompt, contextCapture?.getCurrentContext());
     })
   );
 
@@ -256,10 +265,7 @@ export function activate(context: vscode.ExtensionContext) {
           `${gitInfo}\n` +
           `\n请用简洁的语言总结最近的代码改动，指出潜在的风险区域。`;
 
-        if (wsClient && wsClient.isConnected()) {
-          wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
-          vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
-        }
+        sendToChat(prompt, contextCapture?.getCurrentContext());
       } catch (err) {
         vscode.window.showErrorMessage("PRTS: Failed to summarize changes — " + (err as Error).message);
       }
@@ -303,10 +309,7 @@ export function activate(context: vscode.ExtensionContext) {
         `\n用代码块展示测试代码。\n` +
         `\n\`\`\`${lang}\n${truncated}\n\`\`\``;
 
-      if (wsClient && wsClient.isConnected()) {
-        wsClient.notify("vscode:selection-to-chat", { text: prompt, context: contextCapture?.getCurrentContext() });
-        vscode.commands.executeCommand("workbench.view.extension.prts-sidebar");
-      }
+      sendToChat(prompt, contextCapture?.getCurrentContext());
     })
   );
 
