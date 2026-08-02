@@ -19,6 +19,14 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitFor(cond: () => boolean, timeoutMs = 4000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for condition");
+    await wait(20);
+  }
+}
+
 function makeDataRoot(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "prts-unit-"));
   ROOTS.push(root);
@@ -263,6 +271,47 @@ describe("ws-client", () => {
     assert.strictEqual(client.isConnected(), false);
     const item = (vscodeStub.window._createdStatusBarItems as any[])[0];
     assert.ok(item.text.includes("reconnecting"), `expected reconnecting state, got "${item.text}"`);
+  });
+
+  it("drops timed-out requests from the buffer so they are never replayed", async () => {
+    const root = makeDataRoot(); // no port file -> the client never connects
+    client = new WsClient(makeContext() as any, { requestTimeoutMs: 50 } as any);
+    const p = client.request("chat:send", { text: "hi" });
+    await assert.rejects(p, /timed out/);
+    const buffered = (client as any).bufferedMessages;
+    assert.strictEqual(buffered.length, 0, "stale buffered request must be dropped on timeout");
+  });
+
+  it("does not replay an expired request after a reconnect", async () => {
+    wss = await startServer();
+    const port = serverPort(wss);
+    wireAuth(wss);
+    const root = makeDataRoot();
+    writePortFile(root, port);
+    client = new WsClient(makeContext() as any, { requestTimeoutMs: 200 } as any);
+    await waitForConnected(client);
+
+    // Drop the connection; the client schedules a reconnect in ~1s. Wait
+    // until the client processed the disconnect (close handler rejects all
+    // in-flight pending requests) before queueing a new one.
+    await closeServer(wss);
+    wss = null;
+    await waitFor(() => !client!.isConnected());
+
+    // Queue a request while disconnected. Its timeout (200ms) fires well
+    // before the reconnect, so the buffered copy must be discarded.
+    const p = client.request("chat:get-history");
+    await assert.rejects(p, /timed out/);
+
+    wss = await listenOn(port);
+    const second = wireAuth(wss);
+    await waitForMsg(second.received, (m) => m.type === "auth", 6000);
+    await waitForConnected(client);
+    await wait(150); // give the open-handler flush a moment
+    assert.ok(
+      !second.received.some((m) => m.type === "chat:get-history"),
+      "an expired request must not be replayed after reconnect"
+    );
   });
 
   it("dispose sends vscode:inactive and closes the socket", async () => {
