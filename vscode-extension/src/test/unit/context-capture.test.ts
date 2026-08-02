@@ -157,6 +157,28 @@ describe("context-capture", () => {
     });
   });
 
+  describe("terminal monitoring", () => {
+    it("parses buffered output after a silence period", async () => {
+      inst = makeInstance();
+      const emitters = vscodeStub.window._emitters;
+      emitters.writeTerminalData.emit({ data: "Build failed\nsrc/main.ts:1:3 error TS1000" });
+      await new Promise((r) => setTimeout(r, 600));
+      const evt = inst.ws.calls.find((c: any) => c.type === "vscode:terminal-event");
+      assert.ok(evt, "build error should be forwarded");
+      assert.strictEqual(evt.data.kind, "build-error");
+    });
+
+    it("caps the buffer and flushes immediately when the stream never pauses", async () => {
+      inst = makeInstance();
+      const emitters = vscodeStub.window._emitters;
+      const big = "x".repeat(70_000) + " Build failed";
+      emitters.writeTerminalData.emit({ data: big });
+      const evt = inst.ws.calls.find((c: any) => c.type === "vscode:terminal-event");
+      assert.ok(evt, "overflow should flush immediately without waiting for silence");
+      assert.strictEqual((inst.cc as any).terminalBuffer.length, 0, "buffer must be drained");
+    });
+  });
+
   describe("git events", () => {
     function makeRepo(root: string, head: any) {
       const listeners: any[] = [];

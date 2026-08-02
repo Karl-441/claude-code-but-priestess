@@ -64,6 +64,14 @@ export interface TerminalEvent {
  */
 const MAX_SELECTION_CHARS = 20_000;
 
+/**
+ * Cap for the terminal-output buffer. Long-running streams (e.g.
+ * `npm run watch`) never pause, so the 500ms silence debounce would never
+ * fire and the buffer would grow without bound. When the cap is hit the
+ * buffer is flushed immediately (keeping the most recent output).
+ */
+const MAX_TERMINAL_BUFFER = 64 * 1024;
+
 // ---------------------------------------------------------------------------
 // ContextCapture
 // ---------------------------------------------------------------------------
@@ -81,6 +89,8 @@ export class ContextCapture {
    * to classify git state changes into branch switches vs new commits.
    */
   private gitHeadState = new Map<string, { name: string | null; hash: string | null }>();
+  private terminalBuffer = "";
+  private terminalDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // -----------------------------------------------------------------------
   // Construction
@@ -189,21 +199,19 @@ export class ContextCapture {
 
     // ---- Terminal output monitoring ----
     try {
-      let terminalBuffer = "";
-      let terminalDebounceTimer: ReturnType<typeof setTimeout> | null = null;
       this.disposables.push(
         (vscode.window as any).onDidWriteTerminalData((e: any) => {
-          terminalBuffer += String(e.data || "");
-          if (terminalDebounceTimer) clearTimeout(terminalDebounceTimer);
-          terminalDebounceTimer = setTimeout(() => {
-            terminalDebounceTimer = null;
-            const txt = terminalBuffer;
-            terminalBuffer = "";
-            const parsed = this.parseTerminalOutput(txt);
-            if (parsed) {
-              this.wsClient.notify("vscode:terminal-event", parsed);
-            }
-          }, 500); // debounce: wait 500ms of silence before parsing
+          this.terminalBuffer += String(e.data || "");
+          if (this.terminalBuffer.length > MAX_TERMINAL_BUFFER) {
+            // The stream never pauses (e.g. `npm run watch`): flush right
+            // away to bound memory instead of waiting for 500ms of silence.
+            this.terminalBuffer = this.terminalBuffer.slice(-MAX_TERMINAL_BUFFER);
+            this.flushTerminalBuffer();
+            return;
+          }
+          if (this.terminalDebounceTimer) clearTimeout(this.terminalDebounceTimer);
+          // Debounce: wait 500ms of silence before parsing.
+          this.terminalDebounceTimer = setTimeout(() => this.flushTerminalBuffer(), 500);
         })
       );
     } catch {
@@ -253,6 +261,11 @@ export class ContextCapture {
       clearTimeout(this.contextDebounceTimer);
       this.contextDebounceTimer = null;
     }
+    if (this.terminalDebounceTimer) {
+      clearTimeout(this.terminalDebounceTimer);
+      this.terminalDebounceTimer = null;
+    }
+    this.terminalBuffer = "";
   }
 
   // -----------------------------------------------------------------------
@@ -446,6 +459,23 @@ export class ContextCapture {
   // -----------------------------------------------------------------------
   // Internals — git (best-effort)
   // -----------------------------------------------------------------------
+
+  /**
+   * Parses and forwards the accumulated terminal output, then clears the
+   * buffer. Used by both the silence debounce and the overflow path.
+   */
+  private flushTerminalBuffer(): void {
+    if (this.terminalDebounceTimer) {
+      clearTimeout(this.terminalDebounceTimer);
+      this.terminalDebounceTimer = null;
+    }
+    const txt = this.terminalBuffer;
+    this.terminalBuffer = "";
+    const parsed = this.parseTerminalOutput(txt);
+    if (parsed && this.wsClient?.isConnected()) {
+      this.wsClient.notify("vscode:terminal-event", parsed);
+    }
+  }
 
   private tryWatchGit(context: vscode.ExtensionContext): void {
     try {
