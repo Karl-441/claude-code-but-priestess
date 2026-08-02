@@ -123,6 +123,23 @@ describe("context-capture", () => {
     });
   });
 
+  describe("task events", () => {
+    it("reports success/failure from the real process exit code", () => {
+      inst = makeInstance();
+      const emitters = vscodeStub.tasks._emitters;
+      const execution = {
+        task: { name: "build", definition: { program: "npm" } },
+      };
+
+      emitters.processEnd.emit({ execution, exitCode: 0 });
+      assert.strictEqual(inst.ws.calls[0].type, "vscode:activity");
+      assert.strictEqual(inst.ws.calls[0].data.activity.kind, "task-end");
+
+      emitters.processEnd.emit({ execution, exitCode: 1 });
+      assert.strictEqual(inst.ws.calls[1].data.activity.kind, "task-error");
+    });
+  });
+
   describe("activity", () => {
     it("save events are throttled to one per 3 seconds", () => {
       inst = makeInstance();

@@ -67,6 +67,7 @@ function createStub(): any {
   const tasksEmitters = {
     startTask: createEmitter(),
     endTask: createEmitter(),
+    processEnd: createEmitter(),
   };
   const languagesEmitters = {
     diagnostics: createEmitter(),
@@ -143,6 +144,7 @@ function createStub(): any {
       _emitters: tasksEmitters,
       onDidStartTask: (cb: Listener) => tasksEmitters.startTask.on(cb),
       onDidEndTask: (cb: Listener) => tasksEmitters.endTask.on(cb),
+      onDidEndTaskProcess: (cb: Listener) => tasksEmitters.processEnd.on(cb),
     },
     commands: {
       executeCommand: async () => undefined,

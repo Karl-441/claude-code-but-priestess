@@ -151,10 +151,16 @@ export class ContextCapture {
         })
       );
       this.disposables.push(
-        vscode.tasks.onDidEndTask((e) => {
+        // onDidEndTask gives a TaskEndEvent with no process outcome at all;
+        // the old code tried to read exitCode from the task *definition*, but
+        // that is static JSON from tasks.json and never carries a runtime
+        // exit code - so every task end was misreported as "failed".
+        // onDidEndTaskProcess exposes the real process exit code, so success
+        // (0) and failure (non-zero) are now reported accurately.
+        vscode.tasks.onDidEndTaskProcess((e) => {
           this.sendActivity({
-            kind: e.execution.task.definition?.exitCode === 0 ? "task-end" : "task-error",
-            detail: `Task ${e.execution.task.name} ${e.execution.task.definition?.exitCode === 0 ? "completed" : "failed"}`,
+            kind: e.exitCode === 0 ? "task-end" : "task-error",
+            detail: `Task ${e.execution.task.name} ${e.exitCode === 0 ? "completed" : "failed"}`,
             timestamp: Date.now(),
             file: e.execution.task.definition?.program || "",
           });
