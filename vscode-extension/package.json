@@ -219,8 +219,10 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "package": "vsce package",
-    "test": "tsc -p ./ && node ./out/src/test/runTest.js",
-    "test:compile": "tsc -p ./"
+    "test": "npm run test:unit && npm run test:integration",
+    "test:compile": "tsc -p ./",
+    "test:unit": "tsc -p ./ && mocha \"out/src/test/unit/**/*.test.js\" --require ./out/src/test/unit/helpers/vscode-stub.js --ui bdd --timeout 20000",
+    "test:integration": "tsc -p ./ && node ./out/src/test/runTest.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

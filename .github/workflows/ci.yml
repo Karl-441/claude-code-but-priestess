@@ -45,6 +45,11 @@ jobs:
 
       - name: Run tests
         run: node test/run.js
+      - name: VS Code extension unit tests
+        run: |
+          cd vscode-extension
+          npm run test:unit
+
 
   lint:
     runs-on: ubuntu-latest
