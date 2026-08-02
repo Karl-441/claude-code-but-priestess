@@ -297,6 +297,28 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 </html>`;
   }
 
+  /**
+   * Sends an error envelope back to the webview. Every request handler
+   * below routes failures through this helper: a ws request rejects when
+   * the tray app is closed or times out, and without a .catch() the
+   * rejection would become an unhandled promise rejection in the extension
+   * host while the chat panel silently waits. The webview shim resolves
+   * __prts_request() with this envelope, so the renderer can surface the
+   * failure to the user instead of hanging.
+   */
+  private replyWithError(webview: vscode.Webview, resultType: string, reqId: unknown, error: unknown) {
+    try {
+      webview.postMessage({
+        type: resultType,
+        reqId,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } catch (_) {
+      // The webview may have been disposed while the request was in flight.
+    }
+  }
+
   private handleWebviewMessage(msg: any, webview: vscode.Webview) {
     if (!this.wsClient) return;
 
@@ -315,45 +337,74 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
               reqId: msg.reqId,
               ...res,
             });
+          })
+          .catch((err: any) => {
+            this.replyWithError(webview, "chat:send:result", msg.reqId, err);
           });
         break;
       case "chat:cancel":
+        // chat:cancel is a fire-and-forget notification - the server never
+        // replies, so there is nothing to resolve or reject here.
         this.wsClient.send("chat:cancel");
         break;
       case "chat:clear":
-        this.wsClient.send("chat:clear").then((res: any) => {
-          webview.postMessage({ type: "chat:clear:result", reqId: msg.reqId });
-        });
+        this.wsClient
+          .send("chat:clear")
+          .then((res: any) => {
+            webview.postMessage({ type: "chat:clear:result", reqId: msg.reqId });
+          })
+          .catch((err: any) => {
+            this.replyWithError(webview, "chat:clear:result", msg.reqId, err);
+          });
         break;
       case "chat:get-history":
-        this.wsClient.send("chat:get-history").then((res: any) => {
-          webview.postMessage({
-            type: "chat:get-history:result",
-            reqId: msg.reqId,
-            history: res.history,
+        this.wsClient
+          .send("chat:get-history")
+          .then((res: any) => {
+            webview.postMessage({
+              type: "chat:get-history:result",
+              reqId: msg.reqId,
+              history: res.history,
+            });
+          })
+          .catch((err: any) => {
+            this.replyWithError(webview, "chat:get-history:result", msg.reqId, err);
           });
-        });
         break;
       case "settings:get":
-        this.wsClient.send("settings:get").then((res: any) => {
-          webview.postMessage({
-            type: "settings:get:result",
-            reqId: msg.reqId,
-            state: res.state,
+        this.wsClient
+          .send("settings:get")
+          .then((res: any) => {
+            webview.postMessage({
+              type: "settings:get:result",
+              reqId: msg.reqId,
+              state: res.state,
+            });
+          })
+          .catch((err: any) => {
+            this.replyWithError(webview, "settings:get:result", msg.reqId, err);
           });
-        });
         break;
       case "settings:set":
-        this.wsClient.send("settings:set", { patch: msg.patch });
+        this.wsClient
+          .send("settings:set", { patch: msg.patch })
+          .catch((err: any) => {
+            this.replyWithError(webview, "settings:set:result", msg.reqId, err);
+          });
         break;
       case "desktop-pet:cat-mode-get":
-        this.wsClient.send("desktop-pet:cat-mode-get").then((res: any) => {
-          webview.postMessage({
-            type: "desktop-pet:cat-mode-get:result",
-            reqId: msg.reqId,
-            ...res,
+        this.wsClient
+          .send("desktop-pet:cat-mode-get")
+          .then((res: any) => {
+            webview.postMessage({
+              type: "desktop-pet:cat-mode-get:result",
+              reqId: msg.reqId,
+              ...res,
+            });
+          })
+          .catch((err: any) => {
+            this.replyWithError(webview, "desktop-pet:cat-mode-get:result", msg.reqId, err);
           });
-        });
         break;
       case "fix:apply":
         // Open a diff view comparing the suggested fix against the original file.
@@ -362,7 +413,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       case "preview:open":
       case "preview:close":
       case "html:open-in-browser":
-        // These are local to the webview — no server round-trip needed
+        // These are local to the webview - no server round-trip needed
         break;
       default:
         break;
