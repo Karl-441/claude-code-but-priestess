@@ -5,6 +5,7 @@
  */
 
 import * as vscode from "vscode";
+import * as path from "path";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,7 +75,12 @@ export class ContextCapture {
   private contextDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private diagnosticsSnapshot: DiagnosticsSnapshot | null = null;
   private disposables: vscode.Disposable[] = [];
-  private gitWatcher: vscode.Disposable | null = null;
+  private gitWatchers: vscode.Disposable[] = [];
+  /**
+   * Last observed HEAD per repository root (fsPath -> { name, hash }). Used
+   * to classify git state changes into branch switches vs new commits.
+   */
+  private gitHeadState = new Map<string, { name: string | null; hash: string | null }>();
 
   // -----------------------------------------------------------------------
   // Construction
@@ -234,10 +240,11 @@ export class ContextCapture {
       try { d.dispose(); } catch (_) { /* ignore */ }
     }
     this.disposables.length = 0;
-    if (this.gitWatcher) {
-      try { this.gitWatcher.dispose(); } catch (_) { /* ignore */ }
-      this.gitWatcher = null;
+    for (const w of this.gitWatchers) {
+      try { w.dispose(); } catch (_) { /* ignore */ }
     }
+    this.gitWatchers.length = 0;
+    this.gitHeadState.clear();
     if (this.diagnosticsDebounceTimer) {
       clearTimeout(this.diagnosticsDebounceTimer);
       this.diagnosticsDebounceTimer = null;
@@ -442,26 +449,59 @@ export class ContextCapture {
 
   private tryWatchGit(context: vscode.ExtensionContext): void {
     try {
-      // The git extension API is not directly importable — detect at runtime
+      // The git extension API is not directly importable - detect at runtime
       const gitExt = vscode.extensions.getExtension("vscode.git");
       if (!gitExt) return;
       Promise.resolve(gitExt.activate()).then((api: any) => {
         if (!api || !api.repositories) return;
         for (const repo of api.repositories) {
-          this.gitWatcher = repo.state.onDidChange(() => {
-            // Heuristic: detect new commits by monitoring HEAD changes
-            this.sendActivity({
-              kind: "git-branch-switch",
-              detail: `HEAD changed in ${repo.rootUri?.fsPath || "repo"}`,
-              timestamp: Date.now(),
-              file: repo.rootUri?.fsPath || "",
-            });
-          });
-          break; // watch first repo only
+          const root = repo.rootUri?.fsPath || "";
+          // Remember the current HEAD so state changes can be classified.
+          // repo.state fires on ANY change (file status, index, HEAD...), so
+          // comparing the HEAD reference lets us report real branch switches
+          // and new commits instead of "HEAD changed" for every refresh.
+          const snapshot = this.snapshotGitHead(repo);
+          if (snapshot) this.gitHeadState.set(root, snapshot);
+          this.gitWatchers.push(
+            repo.state.onDidChange(() => {
+              const next = this.snapshotGitHead(repo);
+              if (!next) return;
+              const prev = this.gitHeadState.get(root);
+              this.gitHeadState.set(root, next);
+              if (prev && next.name && prev.name !== next.name) {
+                // The branch pointer moved - a real branch switch.
+                this.sendActivity({
+                  kind: "git-branch-switch",
+                  detail: `Branch switched to ${next.name} in ${path.basename(root) || "repo"}`,
+                  timestamp: Date.now(),
+                  file: root,
+                });
+              } else if (prev && next.hash && prev.hash !== next.hash) {
+                // Same branch, new commit.
+                this.sendActivity({
+                  kind: "git-commit",
+                  detail: `New commit ${next.hash.slice(0, 7)} in ${path.basename(root) || "repo"}`,
+                  timestamp: Date.now(),
+                  file: root,
+                });
+              }
+              // Otherwise: a plain working-tree/index change - nothing to report.
+            })
+          );
         }
       }, () => { /* git not available */ });
     } catch {
-      // Git extension not available — silently ignore
+      // Git extension not available - silently ignore
     }
+  }
+
+  /**
+   * Reads the current HEAD reference (name + commit hash). Returns null when
+   * the repository has no HEAD yet (empty repo / detached with no commit).
+   */
+  private snapshotGitHead(repo: any): { name: string | null; hash: string | null } | null {
+    const head = repo.state?.HEAD;
+    if (!head) return null;
+    return { name: head.name ?? null, hash: head.commit?.hash ?? null };
   }
 }

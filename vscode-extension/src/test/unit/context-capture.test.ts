@@ -157,6 +157,50 @@ describe("context-capture", () => {
     });
   });
 
+  describe("git events", () => {
+    function makeRepo(root: string, head: any) {
+      const listeners: any[] = [];
+      const repo = {
+        rootUri: { fsPath: root },
+        state: {
+          HEAD: head,
+          onDidChange: (cb: any) => {
+            listeners.push(cb);
+            return { dispose() {} };
+          },
+        },
+      };
+      return { repo, emit: () => listeners.forEach((cb) => cb()) };
+    }
+
+    it("watches every repository and classifies branch switches vs new commits", async () => {
+      inst = makeInstance();
+      const r1 = makeRepo("C:\\work\\a", { name: "main", commit: { hash: "aaa111" } });
+      const r2 = makeRepo("C:\\work\\b", { name: "dev", commit: { hash: "bbb222" } });
+      const gitApi = { repositories: [r1.repo, r2.repo] };
+      vscodeStub.extensions.getExtension = () => ({ activate: async () => gitApi }) as any;
+
+      (inst.cc as any).tryWatchGit({});
+      await new Promise((r) => setTimeout(r, 10)); // let activate() resolve
+
+      // Branch switch on repo 1: name changes main -> feature.
+      r1.repo.state.HEAD = { name: "feature", commit: { hash: "aaa111" } };
+      r1.emit();
+      // New commit on repo 2: same branch, new hash.
+      r2.repo.state.HEAD = { name: "dev", commit: { hash: "ccc333" } };
+      r2.emit();
+      // Plain working-tree change on repo 1: HEAD unchanged -> no event.
+      r1.emit();
+
+      const kinds = inst.ws.calls
+        .filter((c: any) => c.type === "vscode:activity")
+        .map((c: any) => c.data.activity.kind);
+      assert.ok(kinds.includes("git-branch-switch"), JSON.stringify(kinds));
+      assert.ok(kinds.includes("git-commit"), JSON.stringify(kinds));
+      assert.strictEqual(kinds.length, 2, JSON.stringify(kinds));
+    });
+  });
+
   describe("activity", () => {
     it("save events are throttled to one per 3 seconds", () => {
       inst = makeInstance();
