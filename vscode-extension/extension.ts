@@ -338,17 +338,32 @@ export function activate(context: vscode.ExtensionContext) {
 // dialog on every connect, so swallow the rejection explicitly.
 wsClient!.request("settings:set", { patch: { advisorFileBlacklist: blacklist } }).catch(() => {});
     }
-    // Auto-switch to advisor once per session when a workspace folder is present.
+    // When a workspace is open, offer advisor mode once per session instead of
+    // silently rewriting the user's persisted setting: advisor gives the model
+    // read access to workspace context, so it should be an explicit choice.
     if (!autoSwitchedToAdvisor) {
       const folders = vscode.workspace.workspaceFolders;
       if (folders && folders.length > 0) {
-        wsClient!.request("settings:get").then((res: any) => {
-          const mode = res?.state?.vibeCodingMode || "companion";
-          if (mode === "companion") {
-            wsClient!.request("settings:set", { patch: { vibeCodingMode: "advisor" } });
-            autoSwitchedToAdvisor = true;
-          }
-        }).catch(() => {});
+        // Ask at most once per session; reconnects must not re-prompt.
+        autoSwitchedToAdvisor = true;
+        wsClient!.request("settings:get")
+          .then((res: any) => {
+            const mode = res?.state?.vibeCodingMode || "companion";
+            // The user already picked a mode - do not nag.
+            if (mode !== "companion") return;
+            return vscode.window
+              .showInformationMessage(
+                "PRTS: 已打开工作区，是否切换到顾问模式（可让普瑞赛斯读取工作区上下文）？",
+                "切换",
+                "保持陪伴"
+              )
+              .then((choice) => {
+                if (choice === "切换") {
+                  return wsClient!.request("settings:set", { patch: { vibeCodingMode: "advisor" } });
+                }
+              });
+          })
+          .catch(() => {});
       }
     }
   });
