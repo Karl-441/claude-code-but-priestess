@@ -314,6 +314,45 @@ describe("ws-client", () => {
     );
   });
 
+  it("ignores malformed server messages without crashing", async () => {
+    wss = await startServer();
+    const root = makeDataRoot();
+    writePortFile(root, serverPort(wss));
+    wss.on("connection", (ws) => {
+      ws.on("message", (data: Buffer) => {
+        const msg = JSON.parse(String(data));
+        if (msg.type === "auth") {
+          ws.send(JSON.stringify({ type: "auth:ok", version: "test" }));
+          ws.send("not json {{{ "); // garbage frame must not throw
+        }
+      });
+    });
+    client = new WsClient(makeContext() as any);
+    await waitForConnected(client);
+    await wait(100);
+    assert.strictEqual(client.isConnected(), true, "client must survive malformed frames");
+  });
+
+  it("survives an auth rejection from the server", async () => {
+    wss = await startServer();
+    const root = makeDataRoot();
+    writePortFile(root, serverPort(wss), "wrong-token"); // client sends TOKEN
+    wss.on("connection", (ws) => {
+      ws.on("message", (data: Buffer) => {
+        const msg = JSON.parse(String(data));
+        if (msg.type === "auth" && msg.token !== "unit-test-token") {
+          ws.close(4001, "unauthorized");
+        }
+      });
+    });
+    client = new WsClient(makeContext() as any);
+    await wait(300);
+    // No crash; the client stays unauthenticated and keeps reconnecting.
+    assert.strictEqual(client.isConnected(), false);
+    client.dispose();
+    client = null;
+  });
+
   it("dispose sends vscode:inactive and closes the socket", async () => {
     wss = await startServer();
     const auth = wireAuth(wss);
