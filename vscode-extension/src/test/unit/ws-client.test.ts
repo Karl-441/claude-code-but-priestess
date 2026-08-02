@@ -274,7 +274,7 @@ describe("ws-client", () => {
   });
 
   it("drops timed-out requests from the buffer so they are never replayed", async () => {
-    const root = makeDataRoot(); // no port file -> the client never connects
+    makeDataRoot(); // no port file -> the client never connects
     client = new WsClient(makeContext() as any, { requestTimeoutMs: 50 } as any);
     const p = client.request("chat:send", { text: "hi" });
     await assert.rejects(p, /timed out/);

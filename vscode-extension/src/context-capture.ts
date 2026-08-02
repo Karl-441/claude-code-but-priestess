@@ -96,7 +96,7 @@ export class ContextCapture {
   // Construction
   // -----------------------------------------------------------------------
 
-  constructor(wsClient: any, context: vscode.ExtensionContext) {
+  constructor(wsClient: any) {
     this.wsClient = wsClient;
     this.currentContext = this.emptyContext();
 
@@ -195,7 +195,7 @@ export class ContextCapture {
     }
 
     // ---- Git (optional, best-effort) ----
-    this.tryWatchGit(context);
+    this.tryWatchGit();
 
     // ---- Terminal output monitoring ----
     try {
@@ -477,7 +477,7 @@ export class ContextCapture {
     }
   }
 
-  private tryWatchGit(context: vscode.ExtensionContext): void {
+  private tryWatchGit(): void {
     try {
       // The git extension API is not directly importable - detect at runtime
       const gitExt = vscode.extensions.getExtension("vscode.git");

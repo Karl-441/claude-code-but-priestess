@@ -117,7 +117,7 @@ export class WsClient extends EventEmitter {
   providerAvailability: { activeProvider: string | null } | null = null;
 
   constructor(
-    private context: vscode.ExtensionContext,
+    context: vscode.ExtensionContext,
     options?: { requestTimeoutMs?: number }
   ) {
     super();
@@ -186,7 +186,7 @@ export class WsClient extends EventEmitter {
         this.handleMessage(data.toString());
       });
 
-      this.ws.on("close", (code: number) => {
+      this.ws.on("close", (_code: number) => {
         this.connected = false;
         this.authenticated = false;
         this.ws = null;
@@ -308,7 +308,7 @@ export class WsClient extends EventEmitter {
   }
 
   private rejectAllPending(reason: Error) {
-    for (const [id, pending] of this.pending) {
+    for (const [, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.reject(reason);
     }

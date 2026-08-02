@@ -22,7 +22,7 @@ function makeWsMock() {
 
 function makeInstance() {
   const ws = makeWsMock();
-  const cc = new ContextCapture(ws as any, {} as any);
+  const cc = new ContextCapture(ws as any);
   ws.calls.length = 0; // drop the constructor-time vscode:workspace send
   return { ws, cc };
 }

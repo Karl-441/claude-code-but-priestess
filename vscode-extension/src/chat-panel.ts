@@ -6,7 +6,6 @@ import { generateApiShim } from "./api-shim";
 import { ContextCapture } from "./context-capture";
 
 export class ChatPanelProvider implements vscode.WebviewViewProvider {
-  private view: vscode.WebviewView | null = null;
   private wsUnsubs: (() => void)[] = [];
   private themeUnsub: vscode.Disposable | null = null;
   /**
@@ -31,7 +30,6 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     this.wsUnsubs.length = 0;
     if (this.themeUnsub) { this.themeUnsub.dispose(); this.themeUnsub = null; }
 
-    this.view = webviewView;
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -356,7 +354,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       case "chat:clear":
         this.wsClient
           .request("chat:clear")
-          .then((res: any) => {
+          .then(() => {
             webview.postMessage({ type: "chat:clear:result", reqId: msg.reqId });
           })
           .catch((err: any) => {
@@ -414,7 +412,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         break;
       case "fix:apply":
         // Open a diff view comparing the suggested fix against the original file.
-        this.applyFix(msg.filePath, msg.newCode, msg.lineStart || 0);
+        this.applyFix(msg.filePath, msg.newCode);
         break;
       case "html:open-in-browser":
         // Open the generated HTML in the built-in Simple Browser (sandboxed)
@@ -498,7 +496,7 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     return tmpDir;
   }
 
-  private applyFix(filePath: string, newCode: string, lineStart: number) {
+  private applyFix(filePath: string, newCode: string) {
     const uri = vscode.Uri.file(filePath);
     try {
       if (!fs.existsSync(uri.fsPath)) {

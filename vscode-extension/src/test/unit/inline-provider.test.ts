@@ -1,7 +1,7 @@
 ﻿/// <reference types="mocha" />
 import * as assert from "assert";
 import { InlineCompletionProvider } from "../../inline-provider";
-import { vscodeStub, resetVscodeStub } from "./helpers/vscode-stub";
+import { resetVscodeStub } from "./helpers/vscode-stub";
 
 // The provider's decision logic (minimum prefix, provider gate, debounce +
 // race swallowing, ghost-text shaping) is all testable with a mocked ws

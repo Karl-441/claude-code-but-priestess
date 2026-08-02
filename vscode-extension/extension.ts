@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
   wsClient = new WsClient(context);
 
   // Vibe coding: capture editor context, diagnostics, workspace, activity
-  contextCapture = new ContextCapture(wsClient, context);
+  contextCapture = new ContextCapture(wsClient);
   context.subscriptions.push(contextCapture);
 
   chatProvider = new ChatPanelProvider(context, wsClient, contextCapture);
