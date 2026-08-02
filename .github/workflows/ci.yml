@@ -10,7 +10,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     strategy:
       matrix:
         node-version: [22]
@@ -49,6 +49,13 @@ jobs:
         run: |
           cd vscode-extension
           npm run test:unit
+
+      # Launches a real VS Code instance headlessly (xvfb) - downloads VS Code
+      # on first run, hence the larger job timeout.
+      - name: VS Code extension integration tests
+        run: |
+          cd vscode-extension
+          xvfb-run -a npm run test:integration
 
 
   lint:

@@ -21,6 +21,9 @@ async function main() {
         workspace,
         "--user-data-dir", userDataDir,
         "--disable-workspace-trust",
+        // --disable-gpu keeps the test instance stable on headless CI
+        // (xvfb) where GL contexts are unavailable.
+        "--disable-gpu",
       ],
     });
   } catch (err) {
