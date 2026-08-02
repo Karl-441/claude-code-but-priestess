@@ -123,6 +123,30 @@ describe("chat-panel message routing", () => {
       history: [{ role: "user", text: "a" }],
     });
   });
+  describe("html preview", () => {
+    it("opens generated HTML in the Simple Browser with a tracked temp file", () => {
+      resetVscodeStub();
+      const { provider } = makeHarness();
+      (provider as any).openHtmlInBrowser("<h1>hi</h1>");
+      const tempDirs = (provider as any).tempDirs as string[];
+      assert.strictEqual(tempDirs.length, 1);
+      const executed = vscodeStub.commands._executed as any[];
+      assert.strictEqual(executed[0].cmd, "vscode.openWith");
+      assert.strictEqual(executed[0].args[1], "simpleBrowser");
+      (provider as any).dispose();
+      assert.ok(!fs.existsSync(tempDirs[0]), "dispose should remove the preview dir");
+    });
+
+    it("rejects empty HTML without creating temp files", () => {
+      resetVscodeStub();
+      const { provider } = makeHarness();
+      (provider as any).openHtmlInBrowser("   ");
+      assert.strictEqual((provider as any).tempDirs.length, 0);
+      const errors = (vscodeStub.window._messages as any[]).filter((m) => m.kind === "error");
+      assert.ok(errors.some((m) => m.text.includes("没有可预览")), "empty HTML must be rejected");
+    });
+  });
+
   describe("applyFix", () => {
     it("rejects files outside the workspace without creating temp files", () => {
       resetVscodeStub();

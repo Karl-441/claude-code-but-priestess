@@ -416,9 +416,13 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         // Open a diff view comparing the suggested fix against the original file.
         this.applyFix(msg.filePath, msg.newCode, msg.lineStart || 0);
         break;
+      case "html:open-in-browser":
+        // Open the generated HTML in the built-in Simple Browser (sandboxed)
+        // rather than the system browser - see openHtmlInBrowser().
+        this.openHtmlInBrowser(msg.html);
+        break;
       case "preview:open":
       case "preview:close":
-      case "html:open-in-browser":
         // These are local to the webview - no server round-trip needed
         break;
       default:
@@ -460,6 +464,28 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
 
   private syncTheme(webview: vscode.Webview) {
     webview.postMessage({ type: "theme", scheme: this.themeScheme() });
+  }
+
+  /**
+   * Opens assistant-generated HTML in the VS Code Simple Browser (built-in,
+   * sandboxed) instead of the system browser: the content comes from the
+   * model and may contain scripts, so keeping it inside VS Code avoids
+   * exposing it to the user's default browser with full local privileges.
+   * The temp file is tracked for cleanup on dispose(), same as fix diffs.
+   */
+  private openHtmlInBrowser(html: string) {
+    if (typeof html !== "string" || !html.trim()) {
+      vscode.window.showErrorMessage("PRTS: 没有可预览的 HTML 内容。");
+      return;
+    }
+    try {
+      const tmpDir = this.createTempDir("prts-preview-");
+      const tmpFile = path.join(tmpDir, "preview.html");
+      fs.writeFileSync(tmpFile, html, "utf8");
+      vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(tmpFile), "simpleBrowser");
+    } catch (err) {
+      vscode.window.showErrorMessage("PRTS: 打开预览失败 — " + (err as Error).message);
+    }
   }
 
   /**
