@@ -87,9 +87,16 @@ function createStub(): any {
     onDidChangeWindowState: (cb: Listener) => windowEmitters.windowState.on(cb),
     onDidWriteTerminalData: (cb: Listener) => windowEmitters.writeTerminalData.on(cb),
     onDidChangeActiveColorTheme: (cb: Listener) => windowEmitters.colorTheme.on(cb),
-    showInformationMessage: async () => undefined,
-    showWarningMessage: async () => undefined,
-    showErrorMessage: async () => undefined,
+    _messages: [] as Array<{ kind: string; text: string }>,
+    showInformationMessage: async (text: string) => {
+      windowSection._messages.push({ kind: "info", text: String(text) });
+    },
+    showWarningMessage: async (text: string) => {
+      windowSection._messages.push({ kind: "warning", text: String(text) });
+    },
+    showErrorMessage: async (text: string) => {
+      windowSection._messages.push({ kind: "error", text: String(text) });
+    },
     showQuickPick: async () => undefined,
   };
 
@@ -100,6 +107,9 @@ function createStub(): any {
     getConfiguration: (_section: string) => ({
       get: (key: string) => workspaceSection._config[key],
     }),
+    // Configurable by tests via workspaceSection._getWorkspaceFolder.
+    getWorkspaceFolder: (_uri: any) =>
+      workspaceSection._getWorkspaceFolder ? workspaceSection._getWorkspaceFolder(_uri) : undefined,
     onDidChangeWorkspaceFolders: (cb: Listener) => workspaceEmitters.workspaceFolders.on(cb),
     onDidSaveTextDocument: (cb: Listener) => workspaceEmitters.save.on(cb),
     onDidChangeConfiguration: (cb: Listener) => workspaceEmitters.configuration.on(cb),
@@ -111,6 +121,13 @@ function createStub(): any {
     getDiagnostics: () => languagesSection._diagnostics,
     onDidChangeDiagnostics: (cb: Listener) => languagesEmitters.diagnostics.on(cb),
     registerInlineCompletionItemProvider: () => ({ dispose() {} }),
+  };
+  const commandsSection: any = {
+    _executed: [] as Array<{ cmd: string; args: any[] }>,
+    executeCommand: async (cmd: string, ...args: any[]) => {
+      commandsSection._executed.push({ cmd, args });
+    },
+    registerCommand: () => ({ dispose() {} }),
   };
 
   return {
@@ -146,10 +163,7 @@ function createStub(): any {
       onDidEndTask: (cb: Listener) => tasksEmitters.endTask.on(cb),
       onDidEndTaskProcess: (cb: Listener) => tasksEmitters.processEnd.on(cb),
     },
-    commands: {
-      executeCommand: async () => undefined,
-      registerCommand: () => ({ dispose() {} }),
-    },
+    commands: commandsSection,
     extensions: {
       getExtension: () => undefined,
     },

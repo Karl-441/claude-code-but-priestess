@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
 import { generateApiShim } from "./api-shim";
 import { ContextCapture } from "./context-capture";
 
@@ -8,6 +9,11 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | null = null;
   private wsUnsubs: (() => void)[] = [];
   private themeUnsub: vscode.Disposable | null = null;
+  /**
+   * Temp directories created for fix-diff / HTML preview files. Cleaned up
+   * in dispose() so previews do not leak one directory each.
+   */
+  private tempDirs: string[] = [];
 
   constructor(
     private context: vscode.ExtensionContext,
@@ -456,6 +462,16 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
     webview.postMessage({ type: "theme", scheme: this.themeScheme() });
   }
 
+  /**
+   * Creates a temp directory and tracks it for cleanup on dispose(). Diff and
+   * HTML preview files would otherwise leak one directory per preview.
+   */
+  private createTempDir(prefix: string): string {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    this.tempDirs.push(tmpDir);
+    return tmpDir;
+  }
+
   private applyFix(filePath: string, newCode: string, lineStart: number) {
     const uri = vscode.Uri.file(filePath);
     try {
@@ -463,16 +479,17 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
         vscode.window.showErrorMessage("PRTS: File not found: " + filePath);
         return;
       }
-      // Safety: only allow files within an open workspace folder.
-      const folders = vscode.workspace.workspaceFolders;
-      const resolved = path.resolve(uri.fsPath);
-      const inWorkspace = folders?.some((f) => resolved.startsWith(f.uri.fsPath + path.sep));
-      if (!inWorkspace) {
+      // Safety: only allow files inside an open workspace folder.
+      // getWorkspaceFolder() uses VS Code's own path normalization (handles
+      // case differences on Windows), unlike a manual startsWith() compare
+      // that would both false-reject valid paths and be bypassable via
+      // symlinks pointing outside the workspace.
+      const folder = vscode.workspace.getWorkspaceFolder(uri);
+      if (!folder) {
         vscode.window.showErrorMessage("PRTS: File is outside the workspace: " + filePath);
         return;
       }
-      const os = require("os");
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prts-suggestion-"));
+      const tmpDir = this.createTempDir("prts-suggestion-");
       const tmpFile = path.join(tmpDir, path.basename(filePath));
       fs.writeFileSync(tmpFile, newCode, "utf8");
       const tmpUri = vscode.Uri.file(tmpFile);
@@ -482,5 +499,20 @@ export class ChatPanelProvider implements vscode.WebviewViewProvider {
       vscode.window.showErrorMessage("PRTS: Failed to create suggestion diff: " +
         (err as Error).message);
     }
+  }
+
+  /**
+   * Cleans up temp files created for fix diffs / HTML previews and
+   * unsubscribes WS relays. Called from extension deactivate(); VS Code
+   * disposes the provider's own registered subscriptions separately.
+   */
+  dispose(): void {
+    for (const dir of this.tempDirs) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
+    }
+    this.tempDirs.length = 0;
+    for (const unsub of this.wsUnsubs) { try { unsub(); } catch (_) { /* ignore */ } }
+    this.wsUnsubs.length = 0;
+    if (this.themeUnsub) { this.themeUnsub.dispose(); this.themeUnsub = null; }
   }
 }

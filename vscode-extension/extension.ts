@@ -7,6 +7,7 @@ import { buildRecentChangesSummary } from "./src/git-summary";
 
 let wsClient: WsClient | null = null;
 let contextCapture: ContextCapture | null = null;
+let chatProvider: ChatPanelProvider | null = null;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log("PRTS: activating…");
@@ -17,7 +18,7 @@ export function activate(context: vscode.ExtensionContext) {
   contextCapture = new ContextCapture(wsClient, context);
   context.subscriptions.push(contextCapture);
 
-  const chatProvider = new ChatPanelProvider(context, wsClient, contextCapture);
+  chatProvider = new ChatPanelProvider(context, wsClient, contextCapture);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider("prts.chatView", chatProvider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -376,6 +377,11 @@ wsClient!.request("settings:set", { patch: { advisorFileBlacklist: blacklist } }
 }
 
 export function deactivate() {
+  // Clean up temp preview files (fix diffs / HTML previews) first.
+  if (chatProvider) {
+    try { chatProvider.dispose(); } catch (_) { /* ignore */ }
+    chatProvider = null;
+  }
   if (contextCapture) {
     contextCapture.dispose();
     contextCapture = null;

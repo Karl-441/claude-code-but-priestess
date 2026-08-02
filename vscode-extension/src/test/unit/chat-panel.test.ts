@@ -1,7 +1,10 @@
 /// <reference types="mocha" />
 import * as assert from "assert";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import { ChatPanelProvider } from "../../chat-panel";
-import { resetVscodeStub } from "./helpers/vscode-stub";
+import { vscodeStub, resetVscodeStub } from "./helpers/vscode-stub";
 
 // ChatPanelProvider relays webview messages to the ws client. These tests pin
 // the request/response contract: every server round-trip must reply to the
@@ -118,6 +121,49 @@ describe("chat-panel message routing", () => {
       type: "chat:get-history:result",
       reqId: "5",
       history: [{ role: "user", text: "a" }],
+    });
+  });
+  describe("applyFix", () => {
+    it("rejects files outside the workspace without creating temp files", () => {
+      resetVscodeStub();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prts-m3-"));
+      const file = path.join(dir, "app.ts");
+      fs.writeFileSync(file, "old", "utf8");
+      try {
+        vscodeStub.workspace._getWorkspaceFolder = () => undefined;
+        const { provider } = makeHarness();
+        (provider as any).applyFix(file, "new code", 0);
+        const errors = (vscodeStub.window._messages as any[]).filter((m) => m.kind === "error");
+        assert.ok(
+          errors.some((m) => m.text.includes("outside the workspace")),
+          "outside files must be rejected"
+        );
+        assert.strictEqual((provider as any).tempDirs.length, 0);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("tracks the temp diff dir and cleans it up on dispose", () => {
+      resetVscodeStub();
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prts-m3-"));
+      const file = path.join(dir, "app.ts");
+      fs.writeFileSync(file, "old", "utf8");
+      try {
+        vscodeStub.workspace._getWorkspaceFolder = () => ({ uri: { fsPath: dir } });
+        const { provider } = makeHarness();
+        (provider as any).applyFix(file, "new code", 0);
+        const tempDirs = (provider as any).tempDirs as string[];
+        assert.strictEqual(tempDirs.length, 1);
+        assert.ok(fs.existsSync(tempDirs[0]), "temp dir should exist");
+        const executed = vscodeStub.commands._executed as any[];
+        assert.strictEqual(executed[0].cmd, "vscode.diff");
+
+        (provider as any).dispose();
+        assert.ok(!fs.existsSync(tempDirs[0]), "dispose should remove the temp dir");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 });
