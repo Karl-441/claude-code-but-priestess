@@ -5,6 +5,7 @@ import * as os from "os";
 import * as path from "path";
 import { WebSocketServer } from "ws";
 import { WsClient } from "../../ws-client";
+import { InlineCompletionProvider } from "../../inline-provider";
 import { vscodeStub, resetVscodeStub } from "./helpers/vscode-stub";
 
 // WsClient talks to a real ws:// endpoint, so these tests spin up a genuine
@@ -351,6 +352,55 @@ describe("ws-client", () => {
     assert.strictEqual(client.isConnected(), false);
     client.dispose();
     client = null;
+  });
+
+﻿  it("end-to-end: inline completion through a real ws connection", async () => {
+    wss = await startServer();
+    const received: any[] = [];
+    wss.on("connection", (ws) => {
+      ws.on("message", (data: Buffer) => {
+        const msg = JSON.parse(String(data));
+        received.push(msg);
+        if (msg.type === "auth") {
+          ws.send(JSON.stringify({ type: "auth:ok", version: "test" }));
+          // Announce an available CLI provider, exactly like the real server.
+          ws.send(JSON.stringify({ type: "chat:status", status: "idle", provider: "codex" }));
+        } else if (msg.type === "chat:inline-complete" && msg.reqId) {
+          // Pretend to be vscode-chat.complete(): return a ghost suggestion.
+          ws.send(JSON.stringify({
+            type: "chat:inline-complete:result",
+            reqId: msg.reqId,
+            text: "const answer = 42;",
+          }));
+        }
+      });
+    });
+    const root = makeDataRoot();
+    writePortFile(root, serverPort(wss));
+
+    const wsClient = new WsClient(makeContext() as any);
+    client = wsClient; // afterEach disposes it
+    await waitForConnected(wsClient);
+
+    const provider = new InlineCompletionProvider(wsClient as any);
+    const doc = {
+      languageId: "typescript",
+      fileName: "app.ts",
+      getText: () => "const answer = ",
+    };
+    const items = await provider.provideInlineCompletionItems(
+      doc as any, { line: 0, character: 16 } as any, {} as any,
+      { isCancellationRequested: false } as any
+    );
+    assert.strictEqual(items.length, 1);
+    assert.strictEqual(items[0].insertText, "const answer = 42;");
+
+    // The server received a well-formed completion request.
+    const req = received.find((m) => m.type === "chat:inline-complete");
+    assert.ok(req, "server should receive chat:inline-complete");
+    assert.strictEqual(req.language, "typescript");
+    assert.strictEqual(req.file, "app.ts");
+    assert.ok(req.prefix.includes("const answer = "), "prefix must be the typed code");
   });
 
   it("dispose sends vscode:inactive and closes the socket", async () => {
