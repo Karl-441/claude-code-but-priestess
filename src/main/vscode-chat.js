@@ -815,7 +815,7 @@ function hasPreviousConversation() {
 // Lightweight inline completion — spawns a one-shot CLI subprocess per request.
 // Uses chat.getProviderAvailability() for resolved paths and cli-spawn.js for
 // cross-platform spawning. Does NOT touch history, archive, or any shared turn state.
-const COMPLETION_TIMEOUT_MS = 4000;
+const COMPLETION_TIMEOUT_MS = 10000;
 
 ﻿let completionInFlight = false;
 
