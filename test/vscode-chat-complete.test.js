@@ -78,12 +78,20 @@ test("vscode-chat complete() uses stdin for codex and cleans the output", async 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "prts-complete-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-  const restoreElectron = installModuleStub("electron", {
+  // electron is a devDependency and absent on CI (npm install --omit=dev).
+  // Intercept Module._load so vscode-chat.js and its persona/settings deps
+  // load without the real electron package - this test must run everywhere.
+  const electronMock = {
     app: { getPath: () => tmp },
     shell: { openExternal: async () => {}, openPath: async () => {} },
     Notification: class { show() {} },
-  });
-  t.after(restoreElectron);
+  };
+  const originalLoad = Module._load;
+  Module._load = function (request, parent, isMain) {
+    if (request === "electron") return electronMock;
+    return originalLoad.apply(this, arguments);
+  };
+  t.after(() => { Module._load = originalLoad; });
 
   const binDir = path.join(tmp, "bin");
   fs.mkdirSync(binDir, { recursive: true });
