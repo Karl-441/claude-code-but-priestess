@@ -20,7 +20,7 @@ const persona = require("./persona");
 const settings = require("./settings");
 const skills = require("./skills");
 const { spawnCli } = require("./cli-spawn");
-const { normalizeCwd } = require("./chat-runtime");
+const { normalizeCwd, buildCodexExecArgs } = require("./chat-runtime");
 const { cleanDirectiveText, consumeDirectiveChunk } = require("./directive-stream");
 const {
   classifyCodexRejection,
@@ -825,8 +825,9 @@ async function complete(prefix, file, language) {
   if (midTurn) return null;
 
   // Reject completion while another completion is already running. Every
-  // completion request spawns a fresh CLI subprocess (Codex `exec -p` /
-  // Claude `-p`), and the VS Code inline provider fires after every ~300ms
+  // completion request spawns a fresh CLI subprocess (Codex `exec` with the
+  // prompt on stdin / Claude `-p`), and the VS Code inline provider fires
+  // after every ~300ms
   // pause while the user types. Without this guard a short burst of typing
   // could fork several CLI processes at once. Dropping the redundant ones
   // keeps the system cheap; the next pause triggers a fresh completion.
@@ -857,9 +858,19 @@ async function complete(prefix, file, language) {
     };
 
     let args;
-    const cwd = settings.get("chatCwd") || "";
+    let effectiveCwd = settings.get("chatCwd") || "";
+    let stdinPrompt = null;
     if (provider === "codex") {
-      args = ["exec", "-p", prompt, "--json"];
+      // `codex exec` has no `-p` prompt flag: -p is `--profile`, so the old
+      // `["exec", "-p", prompt, "--json"]` made codex treat the prompt as a
+      // profile name, error out, and produce empty stdout - completions were
+      // always null. Match the main chat path (buildCodexExecArgs): prompt is
+      // fed through stdin (`-`) with a read-only sandbox. --json is dropped:
+      // complete() parses plain text (markdown-stripped), not the event stream.
+      const built = buildCodexExecArgs({ cwd: effectiveCwd, mode: "companion", memoryDir: persona.memoryDir() });
+      args = built.args.filter((a) => a !== "--json");
+      effectiveCwd = built.cwd;
+      stdinPrompt = prompt;
     } else {
       // Claude: -p for single-turn, --output-format text (no --max-tokens flag exists)
       args = ["-p", prompt, "--output-format", "text"];
@@ -868,9 +879,12 @@ async function complete(prefix, file, language) {
     }
 
     const proc = spawnCli(info.command, args, {
-      cwd: cwd || undefined,
+      cwd: effectiveCwd || undefined,
       env: { ...process.env },
     });
+    if (stdinPrompt != null) {
+      try { proc.stdin.end(stdinPrompt); } catch (_) { /* process already exited */ }
+    }
 
     let stdout = "";
     let timedOut = false;
